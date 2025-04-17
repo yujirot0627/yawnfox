@@ -18,8 +18,16 @@ export class PeerConnection {
         if (typeof window === 'undefined') return;
 
         try {
-                this.localStream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
-                this.options?.onLocalMedia?.(this.localStream);
+            this.localStream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                  width: { ideal: 640 },
+                  height: { ideal: 480 },
+                  frameRate: { ideal: 24, max: 30 }
+                },
+                audio: true
+              });
+              
+            this.options?.onLocalMedia?.(this.localStream);
                 
         } catch (err) {
             err;
@@ -143,16 +151,38 @@ export class PeerConnection {
         this.setState("DISCONNECTED_LOCAL");
     }
 
-    disconnect(orignator) {
+    // disconnect(orignator) {
+    //     if (this.peerConnection?.signalingState !== "closed") {
+    //         this.peerConnection.close();
+    //     }
+
+    //     this.dataChannel = null;
+    //     this.peerConnection.close();
+    //     this.peerConnection = this.createPeerConnection();
+    //     this.setState(`DISCONNECTED_${orignator}`);
+    // }
+    disconnect(originator) {
+        // Close data channel
+        if (this.dataChannel) {
+            this.dataChannel.close();
+            this.dataChannel = null;
+        }
+    
+        // Close peer connection
         if (this.peerConnection?.signalingState !== "closed") {
             this.peerConnection.close();
         }
-
-        this.dataChannel = null;
-        this.peerConnection.close();
-        this.peerConnection = this.createPeerConnection();
-        this.setState(`DISCONNECTED_${orignator}`);
+        this.peerConnection = null;
+    
+        // Close WebSocket
+        if (this.sdpExchange?.readyState === WebSocket.OPEN) {
+            this.sdpExchange.close();
+        }
+        this.sdpExchange = null;
+    
+        this.setState(`DISCONNECTED_${originator}`);
     }
+    
 
     setState(state) {
         this.state = state;

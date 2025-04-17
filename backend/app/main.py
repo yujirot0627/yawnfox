@@ -9,10 +9,6 @@ from starlette.responses import FileResponse
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 
-clients: Set[WebSocket] = set()
-partners: Dict[WebSocket, WebSocket] = {}
-ready_clients: Set[WebSocket] = set()
-
 class ManagedWebSocket:
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
@@ -25,40 +21,53 @@ class ManagedWebSocket:
 
     async def send_text(self, message: str):
         if not self.closed:
-            await self.websocket.send_text(message)
+            try:
+                await self.websocket.send_text(message)
+            except:
+                self.closed = True
+
+clients: Set[ManagedWebSocket] = set()
+partners: Dict[ManagedWebSocket, ManagedWebSocket] = {}
+ready_clients: Set[ManagedWebSocket] = set()
 
 async def websocket_endpoint(websocket: WebSocket):
+    ws = ManagedWebSocket(websocket)
     await websocket.accept()
-    clients.add(websocket)
+    clients.add(ws)
 
     try:
         while True:
-            data = json.loads(await websocket.receive_text())
+            try:
+                data = json.loads(await websocket.receive_text())
+            except:
+                break 
 
             if data.get("name") == "PAIRING_START":
-                ready_clients.add(websocket)
+                ready_clients.add(ws)
                 await try_match_partner()
 
             elif data.get("name") == "PAIRING_ABORT":
-                ready_clients.discard(websocket)
+                ready_clients.discard(ws)
 
             elif data.get("name") == "LEAVE":
-                await cleanup(websocket)
+                await cleanup(ws)
 
-            elif websocket in partners:
-                partner = partners[websocket]
-                try:
-                    await partner.send_text(json.dumps(data))
-                except:
-                    await cleanup(partner)
+            elif ws in partners:
+                partner = partners[ws]
+                await partner.send_text(json.dumps(data))
 
     except WebSocketDisconnect:
-        await cleanup(websocket)
+        await cleanup(ws)
 
 async def try_match_partner():
+    ready = [ws for ws in ready_clients if not ws.closed]
+
     if len(ready_clients) >= 2:
-        a = ready_clients.pop()
-        b = ready_clients.pop()
+        a = ready.pop()
+        b = ready.pop()
+
+        ready_clients.discard(a)
+        ready_clients.discard(b)
 
         partners[a] = b
         partners[b] = a
@@ -66,7 +75,7 @@ async def try_match_partner():
         await a.send_text(json.dumps({"name": "PARTNER_FOUND", "data": "GO_FIRST"}))
         await b.send_text(json.dumps({"name": "PARTNER_FOUND", "data": "WAIT"}))
 
-async def cleanup(ws: WebSocket):
+async def cleanup(ws: ManagedWebSocket):
     clients.discard(ws)
     ready_clients.discard(ws)
 
@@ -76,6 +85,8 @@ async def cleanup(ws: WebSocket):
         ready_clients.discard(partner)
 
         await partner.send_text(json.dumps({"name": "PARTNER_LEFT"}))
+
+    await ws.safe_close()
         
 
 async def homepage(_):

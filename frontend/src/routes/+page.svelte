@@ -30,6 +30,21 @@
 			Start Chatting
 		</button>
 
+    <!-- Support Us -->
+  <div class="mt-6 text-sm text-gray-300 max-w-xs text-center">
+    <p class="mb-2">
+      🙏 Help us keep Yawnfox free and running smoothly for everyone.
+    </p>
+    <a
+      href="https://www.buymeacoffee.com/yourusername" 
+      target="_blank" 
+      class="inline-block mt-2 bg-yellow-400 text-black px-4 py-2 rounded-lg font-semibold shadow hover:bg-yellow-300 transition"
+    >
+      Tip / Donate
+    </a>
+  </div>
+
+
 		<!-- Footer Links -->
 		<div class="text-sm text-gray-300 mt-6 space-x-4">
 			<a href="/tos" class="hover:underline">Terms</a>

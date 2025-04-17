@@ -35,6 +35,8 @@
             statusMessage = 'Stranger disconnected';
             showOverlay = true;
             isRemoteCamOn = true;
+
+            createPeer();
         }else {
 			statusMessage = 'Ready to match!';
 		}
@@ -58,6 +60,7 @@
         return () => {
         // cleanup
             peer?.sendBye();
+            peer = null;
         };
 	});
     async function createPeer() {
@@ -70,11 +73,17 @@
             }
         },false);
 
+        await waitForWebSocketOpen(peer.sdpExchange);
+
         isRemoteCamOn = true;
         isCamOn = true;
     }
 
-
+    function waitForWebSocketOpen(ws) {
+    return new Promise((resolve) => {
+        if (ws.readyState === WebSocket.OPEN) return resolve();
+        ws.addEventListener("open", () => resolve(), { once: true });
+    });}
 
     function handleRemoteVideoPlay() {
 	    console.log('🎥 Remote video is playing');
@@ -82,6 +91,11 @@
     }
 
 	function startPairing() {
+        if (!peer?.sdpExchange || peer.sdpExchange.readyState !== WebSocket.OPEN) {
+	        console.warn("⏳ Cannot start pairing – WebSocket not ready");
+	        return;
+        }
+        
 		if (peer.state !== 'CONNECTED') {
 			peer.setState('CONNECTING');
 			peer.sdpExchange.send(JSON.stringify({ name: 'PAIRING_START' }));
@@ -177,11 +191,12 @@
         {/if}
       
         <!-- Floating Local Video -->
+        <!-- svelte-ignore a11y_media_has_caption -->
         <video
             bind:this={localVideo}
             autoplay
-            muted
             playsinline
+            muted
             class={`${
             layoutMode === 'split'
             ? 'w-full md:w-1/2 h-1/2 md:h-full object-cover'
