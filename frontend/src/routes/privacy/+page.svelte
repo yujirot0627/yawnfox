@@ -19,15 +19,25 @@
         <li>👣 <strong>No tracking.</strong> We do not use cookies or tracking technologies to monitor user behavior.</li>
       </ul>
   
-      <h2 class="text-2xl font-semibold text-white mb-4">Community Guidelines & User Safety</h2>
+      <h2 class="text-2xl font-semibold text-white mb-4">Community Guidelines</h2>
       <ul class="text-left text-gray-300 space-y-2">
         <li>🚫 No sexual or explicit content of any kind.</li>
         <li>🚫 No harassment, bullying, or threats of violence.</li>
         <li>🚫 You must be at least 18 years of age to use this platform.</li>
       </ul>
   
+      <h2 class="text-2xl font-semibold text-white mt-8 mb-4">Recording Policy</h2>
+      <ul class="text-left text-gray-300 space-y-2">
+        <li>🎥 Recording is <strong>strictly prohibited</strong> unless both users explicitly agree to it during the conversation.</li>
+        <li>⚠️ Unauthorized recording may violate privacy laws. By using Yawnfox, you agree to respect your partner's consent and privacy.</li>
+      </ul>
+  
       <p class="text-sm text-gray-400 mt-8 border-t border-gray-600 pt-4">
-        Yawnfox does not moderate conversations in real time. Users are responsible for their own conduct. Violations of our terms or guidelines may result in suspension or permanent ban.
+        Yawnfox does not moderate conversations in real time. Users are responsible for their own conduct. Violating these terms may result in denial of future access.
+      </p>
+  
+      <p class="text-xs text-gray-400 mt-4 italic">
+        This service is provided "as is" without warranties. Use at your own risk and ensure you comply with local laws.
       </p>
   
       <p class="text-sm text-gray-400 mt-4">
