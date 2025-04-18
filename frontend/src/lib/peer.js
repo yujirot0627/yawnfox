@@ -47,7 +47,6 @@ export class PeerConnection {
     createSdpExchange() { // WebSocket with listeners for exchanging SDP offers and answers
         let protocol = window.location.protocol === "https:" ? "wss" : "ws";
         let ws = new WebSocket(`${protocol}://${import.meta.env.VITE_API_DOMAIN}/api/matchmaking`);
-        //let ws = new WebSocket(`${protocol}://localhost:8000/api/matchmaking`);
 
         ws.addEventListener("message", (event) => {
             const message = JSON.parse(event.data);
