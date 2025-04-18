@@ -3,8 +3,9 @@ import json
 import uuid
 from typing import Dict, Set
 from starlette.applications import Starlette
-from starlette.routing import WebSocketRoute
+from starlette.routing import WebSocketRoute,Mount
 from starlette.websockets import WebSocket, WebSocketDisconnect
+from starlette.staticfiles import StaticFiles
 import asyncio
 
 # In-memory state
@@ -115,5 +116,6 @@ async def cleanup(ws_id: str):
 app = Starlette(
     routes=[
         WebSocketRoute("/api/matchmaking", websocket_endpoint),
+        Mount("/", StaticFiles(directory="frontend/src", html=True))
     ]
 )
