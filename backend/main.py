@@ -116,6 +116,5 @@ async def cleanup(ws_id: str):
 app = Starlette(
     routes=[
         WebSocketRoute("/api/matchmaking", websocket_endpoint),
-        Mount("/", StaticFiles(directory="frontend/src", html=True))
     ]
 )
