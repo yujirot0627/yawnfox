@@ -4,20 +4,20 @@ app = "yawnfox"
 dockerfile = "Dockerfile"
 
 [env]
-PORT = "8080"
+PORT = "8000"
 
 [[services]]
-internal_port = 8080
+internal_port = 8000
 protocol = "tcp"
 
-  [[services.ports]]
-  handlers = ["http"]
-  port = 80
+[[services.ports]]
+handlers = ["http"]
+port = 80
 
-  [[services.ports]]
-  handlers = ["tls", "http"]
-  port = 443
+[[services.ports]]
+handlers = ["tls", "http"]
+port = 443
 
-  [[services.tcp_checks]]
-  interval = "15s"
-  timeout = "2s"
+[[services.tcp_checks]]
+interval = "15s"
+timeout = "2s"

@@ -14,9 +14,9 @@
     
     # Copy backend + frontend build
     COPY backend ./
-    COPY --from=frontend /frontend/build ./static
+    COPY --from=frontend /frontend/svelte-kit/output ./static
     
     # Expose port + run with Uvicorn
-    CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+    CMD ["gunicorn", "main:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "4"]
     EXPOSE 8080
     
