@@ -19,7 +19,7 @@
 
 		<!-- Tagline -->
 		<p class="text-lg text-gray-200 max-w-md">
-			A simple, fun, and anonymous video chat experience. No sign up. No hassle. Just meet new people instantly.
+			Yawnfox is your lightweight alternative to Omegle — anonymous video chat with strangers, no login required. Instant, fun, and totally free.
 		</p>
 
 		<!-- Start Chatting Button -->
@@ -30,26 +30,53 @@
 			Start Chatting
 		</button>
 
-    <!-- Support Us -->
-  <div class="mt-6 text-sm text-gray-300 max-w-xs text-center">
-    <p class="mb-2">
-      🙏 Help us keep Yawnfox free and running smoothly for everyone.
-    </p>
-    <a
-      href="https://buymeacoffee.com/overcaffdev" 
-      target="_blank" 
-      class="inline-block mt-2 bg-yellow-400 text-black px-4 py-2 rounded-lg font-semibold shadow hover:bg-yellow-300 transition"
-    >
-      Tip / Donate
-    </a>
-  </div>
+		<!-- Support Us -->
+		<div class="mt-6 text-sm text-gray-300 max-w-xs text-center">
+			<p class="mb-2">
+				🙏 Help us keep Yawnfox free and running smoothly for everyone.
+			</p>
+			<a
+				href="https://buymeacoffee.com/overcaffdev" 
+				target="_blank" 
+				class="inline-block mt-2 bg-yellow-400 text-black px-4 py-2 rounded-lg font-semibold shadow hover:bg-yellow-300 transition"
+			>
+				Tip / Donate
+			</a>
+		</div>
+
+		<!-- SEO Bonus: Omegle FAQ section -->
+		<!-- SEO Bonus: Omegle FAQ section -->
+<div class="mt-12 w-full max-w-2xl bg-white/5 rounded-2xl p-6 sm:p-8 backdrop-blur-sm shadow-lg border border-white/10">
+	<h2 class="text-2xl sm:text-3xl font-bold text-white mb-6">Yawnfox vs. Omegle</h2>
+
+	<!-- What is Yawnfox -->
+	<div class="mb-6">
+		<h3 class="text-lg font-semibold text-yellow-400 mb-2">What is Yawnfox?</h3>
+		<p class="text-sm sm:text-base text-gray-200 leading-relaxed">
+			Yawnfox is a free, lightweight alternative to Omegle for anonymous video chats. No accounts, no tracking — just meet new people instantly, face-to-face.
+		</p>
+	</div>
+
+	<!-- Difference from Omegle -->
+	<div>
+		<h3 class="text-lg font-semibold text-yellow-400 mb-2">How is Yawnfox different from Omegle?</h3>
+		<p class="text-sm sm:text-base text-gray-200 leading-relaxed">
+			Unlike Omegle, Yawnfox has no ads, no captchas, and no clutter. It's designed for speed, privacy, and a smooth one-click connection experience.
+		</p>
+	</div>
+</div>
 
 
 		<!-- Footer Links -->
-		<div class="text-sm text-gray-300 mt-6 space-x-4">
-			<a href="/tos" class="hover:underline">Terms</a>
-			<a href="/privacy" class="hover:underline">Privacy</a>
-		</div>
+		<!-- Footer Links -->
+<footer class="mt-12 pt-6 border-t border-white/10 w-full text-center text-sm text-gray-400">
+	<div class="flex justify-center space-x-6">
+		<a href="/tos" class="hover:text-white transition-colors duration-200">Terms of Service</a>
+		<a href="/privacy" class="hover:text-white transition-colors duration-200">Privacy Policy</a>
+	</div>
+	<p class="mt-4 text-xs text-gray-500">© {new Date().getFullYear()} Yawnfox. All rights reserved.</p>
+</footer>
+
 	</div>
 </div>
 

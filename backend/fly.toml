@@ -6,9 +6,6 @@
 app = 'backend-fragrant-paper-2193'
 primary_region = 'otp'
 
-[build]
-  builder = 'paketobuildpacks/builder:base'
-
 [env]
   PORT = '8080'
 
