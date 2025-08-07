@@ -6,6 +6,8 @@ from starlette.applications import Starlette
 from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.staticfiles import StaticFiles
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 import asyncio
 
 # In-memory state
@@ -14,6 +16,8 @@ partners: Dict[str, str] = {}
 ready_clients: Set[str] = set()
 match_lock = asyncio.Lock()
 
+async def ping(request):
+    return JSONResponse({"message": "Server is awake"})
 class ManagedWebSocket:
     def __init__(self, websocket: WebSocket, ws_id: str):
         self.websocket = websocket
@@ -115,6 +119,7 @@ async def cleanup(ws_id: str):
 
 app = Starlette(
     routes=[
+        Route("/ping", ping),
         WebSocketRoute("/api/matchmaking", websocket_endpoint),
     ]
 )
