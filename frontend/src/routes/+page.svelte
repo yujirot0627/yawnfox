@@ -2,102 +2,113 @@
 	let showConsent = false;
 
 	function agreeAndContinue() {
-		// Navigate only after agreement
 		window.location.href = '/chat';
 	}
 </script>
 
-<div class="min-h-screen bg-gradient-to-br from-purple-800 to-indigo-900 flex items-center justify-center px-4 text-white">
-	<div class="flex flex-col items-center text-center space-y-6 max-w-xl">
-		<!-- Logo -->
-		<img src="/icon.png" alt="Yawnfox Logo" class="w-24 h-24 sm:w-28 sm:h-28 mb-2 rounded-xl shadow-lg" />
-
-		<!-- Heading -->
-		<h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight">
-			Welcome to <span class="text-yellow-400">yawnfox</span> 🎥
-		</h1>
+<div class="flex min-h-screen flex-col bg-gray-900 text-white lg:flex-row">
+	<!-- Left Side: Branding & CTA -->
+	<div
+		class="mx-auto flex max-w-xl flex-col items-start justify-center space-y-10 px-8 py-12 lg:w-1/2"
+	>
+		<!-- Branding -->
+		<div class="flex items-center space-x-4">
+			<img
+				src="/icon.png"
+				alt="Yawnfox Logo"
+				class="h-16 w-16 rounded-xl shadow-lg sm:h-20 sm:w-20"
+			/>
+			<h1 class="text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl">
+				<span class="text-yellow-400">Yawnfox</span> <span class="text-white">🎥</span>
+			</h1>
+		</div>
 
 		<!-- Tagline -->
-		<p class="text-lg text-gray-200 max-w-md">
-			Yawnfox is your lightweight alternative to Omegle — anonymous video chat with strangers, no login required. Instant, fun, and totally free.
+		<p class="text-lg leading-relaxed text-gray-300 sm:text-xl">
+			Chat with strangers instantly. No login, no clutter — just anonymous face-to-face video
+			conversations.
 		</p>
 
-		<!-- Start Chatting Button -->
-		<button
-			on:click={() => (showConsent = true)}
-			class="mt-4 bg-yellow-400 text-black font-semibold text-lg px-6 py-3 rounded-xl shadow hover:bg-yellow-300 transition duration-200"
-		>
-			Start Chatting
-		</button>
+		<!-- CTA Button -->
+		<div class="flex flex-col space-y-4 sm:flex-row sm:items-center sm:space-x-4 sm:space-y-0">
+			<button
+				on:click={() => (showConsent = true)}
+				class="rounded-xl bg-yellow-400 px-6 py-3 text-lg font-semibold text-black shadow-md transition hover:scale-105 hover:bg-yellow-300"
+			>
+				Start Chatting
+			</button>
 
-		<!-- Support Us -->
-		<div class="mt-6 text-sm text-gray-300 max-w-xs text-center">
-			<p class="mb-2">
-				🙏 Help us keep Yawnfox free and running smoothly for everyone.
-			</p>
+			<!-- Donate Link -->
 			<a
-				href="https://buymeacoffee.com/overcaffdev" 
-				target="_blank" 
-				class="inline-block mt-2 bg-yellow-400 text-black px-4 py-2 rounded-lg font-semibold shadow hover:bg-yellow-300 transition"
+				href="https://buymeacoffee.com/overcaffdev"
+				target="_blank"
+				class="rounded-md bg-yellow-400 px-5 py-2.5 text-sm font-semibold text-black shadow transition hover:scale-105 hover:bg-yellow-300"
 			>
 				Tip / Donate
 			</a>
 		</div>
 
-		<!-- SEO Bonus: Omegle FAQ section -->
-		<!-- SEO Bonus: Omegle FAQ section -->
-<div class="mt-12 w-full max-w-2xl bg-white/5 rounded-2xl p-6 sm:p-8 backdrop-blur-sm shadow-lg border border-white/10">
-	<h2 class="text-2xl sm:text-3xl font-bold text-white mb-6">Yawnfox vs. Omegle</h2>
-
-	<!-- What is Yawnfox -->
-	<div class="mb-6">
-		<h3 class="text-lg font-semibold text-yellow-400 mb-2">What is Yawnfox?</h3>
-		<p class="text-sm sm:text-base text-gray-200 leading-relaxed">
-			Yawnfox is a free, lightweight alternative to Omegle for anonymous video chats. No accounts, no tracking — just meet new people instantly, face-to-face.
-		</p>
+		<!-- Footer -->
+		<footer class="w-full pt-8 text-sm text-gray-500">
+			<div class="flex flex-wrap items-center gap-6">
+				<a href="/tos" class="transition hover:text-white">Terms</a>
+				<a href="/privacy" class="transition hover:text-white">Privacy</a>
+			</div>
+			<p class="mt-4 text-xs">© {new Date().getFullYear()} Yawnfox. All rights reserved.</p>
+		</footer>
 	</div>
 
-	<!-- Difference from Omegle -->
-	<div>
-		<h3 class="text-lg font-semibold text-yellow-400 mb-2">How is Yawnfox different from Omegle?</h3>
-		<p class="text-sm sm:text-base text-gray-200 leading-relaxed">
-			Unlike Omegle, Yawnfox has no ads, no captchas, and no clutter. It's designed for speed, privacy, and a smooth one-click connection experience.
-		</p>
+	<!-- Right Side: FAQ & Info Card -->
+	<div
+		class="relative flex items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900 px-6 py-12 lg:w-1/2"
+	>
+		<div
+			class="w-full max-w-2xl space-y-6 rounded-2xl border border-white/10 bg-white/5 p-6 shadow-2xl backdrop-blur-md sm:p-8"
+		>
+			<h2 class="text-2xl font-bold text-white sm:text-3xl">Why Yawnfox?</h2>
+
+			<!-- Section 1 -->
+			<div>
+				<h3 class="mb-2 text-lg font-semibold text-yellow-400">What is Yawnfox?</h3>
+				<p class="text-sm leading-relaxed text-gray-200 sm:text-base">
+					Yawnfox is your minimalist alternative to Omegle. No accounts, no tracking, just instant
+					video chats with strangers — totally free.
+				</p>
+			</div>
+
+			<!-- Section 2 -->
+			<div>
+				<h3 class="mb-2 text-lg font-semibold text-yellow-400">How is it different?</h3>
+				<p class="text-sm leading-relaxed text-gray-200 sm:text-base">
+					No ads, no captchas, and no clutter. Yawnfox focuses on speed, privacy, and one-click
+					video chatting without the junk.
+				</p>
+			</div>
+		</div>
 	</div>
 </div>
 
-
-		<!-- Footer Links -->
-		<!-- Footer Links -->
-<footer class="mt-12 pt-6 border-t border-white/10 w-full text-center text-sm text-gray-400">
-	<div class="flex justify-center space-x-6">
-		<a href="/tos" class="hover:text-white transition-colors duration-200">Terms of Service</a>
-		<a href="/privacy" class="hover:text-white transition-colors duration-200">Privacy Policy</a>
-	</div>
-	<p class="mt-4 text-xs text-gray-500">© {new Date().getFullYear()} Yawnfox. All rights reserved.</p>
-</footer>
-
-	</div>
-</div>
-
+<!-- Consent Modal -->
 {#if showConsent}
-	<div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-		<div class="bg-white text-black rounded-xl p-6 w-[90%] max-w-sm shadow-lg space-y-4 text-center">
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+		<div
+			class="w-[90%] max-w-sm space-y-4 rounded-2xl bg-white p-6 text-center text-black shadow-2xl backdrop-blur-lg"
+		>
 			<h2 class="text-xl font-semibold">Do you agree to our Terms?</h2>
 			<p class="text-sm text-gray-600">
 				To use Yawnfox, you must agree to our
-				<a href="/tos" class="text-indigo-600 hover:underline font-medium">Terms of Service</a> and
-				<a href="/privacy" class="text-indigo-600 hover:underline font-medium">Privacy Policy</a>.
+				<a href="/tos" class="font-medium text-indigo-600 hover:underline">Terms of Service</a> and
+				<a href="/privacy" class="font-medium text-indigo-600 hover:underline">Privacy Policy</a>.
 			</p>
-			<div class="flex justify-center gap-4 mt-4">
+			<div class="mt-4 flex justify-center gap-4">
 				<button
-					class="bg-gray-200 hover:bg-gray-300 text-black px-4 py-2 rounded"
+					class="rounded bg-gray-100 px-4 py-2 text-black hover:bg-gray-200"
 					on:click={() => (showConsent = false)}
 				>
 					Cancel
 				</button>
 				<button
-					class="bg-yellow-400 hover:bg-yellow-300 text-black px-4 py-2 rounded font-semibold"
+					class="rounded bg-yellow-400 px-4 py-2 font-semibold text-black hover:bg-yellow-300"
 					on:click={agreeAndContinue}
 				>
 					I Agree
