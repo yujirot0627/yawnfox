@@ -10,6 +10,11 @@ export class PeerConnection {
 	constructor(options, setInitialState = true) {
 		this.options = options;
 		this._setInitialState = setInitialState;
+
+		// runtime flags/buffers
+		this._remoteDescSet = false;
+		this._pendingCandidates = [];
+		this._wsBuffer = [];
 	}
 
 	async init() {
@@ -24,14 +29,13 @@ export class PeerConnection {
 				},
 				audio: true
 			});
-
 			this.options?.onLocalMedia?.(this.localStream);
 		} catch (err) {
-			err;
-			console.log('enable camera failed');
+			console.log('enable camera failed', err);
 			this.options?.onStateChange?.('CAMERA_FAILED');
 			return;
 		}
+
 		if (this._setInitialState) {
 			console.log('👋 Setting initial NOT_CONNECTED');
 			this.setState('NOT_CONNECTED');
@@ -41,83 +45,116 @@ export class PeerConnection {
 	}
 
 	async createSdpExchange() {
-		await ensureServerAwake(); // ⬅️ Ping server first
-		// WebSocket with listeners for exchanging SDP offers and answers
-		let protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-		let ws = new WebSocket(`${protocol}://${import.meta.env.VITE_API_DOMAIN}/api/matchmaking`);
-		ws.onopen = () => console.log('✅ connected');
-		ws.onerror = (e) => console.log('❌ error', e);
-		ws.onclose = (e) => console.log('🔌 closed', e);
-		ws.onmessage = (e) => console.log('📨', e.data);
+		await ensureServerAwake();
+
+		const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+		const ws = new WebSocket(`${protocol}://${import.meta.env.VITE_API_DOMAIN}/api/matchmaking`);
+		//const ws = new WebSocket(`ws://localhost:8000/api/matchmaking`);
+
+		ws.addEventListener('open', () => {
+			console.log('✅ signaling connected');
+			// flush buffered messages
+			this._wsBuffer.forEach((m) => ws.send(m));
+			this._wsBuffer = [];
+		});
+
+		ws.onerror = (e) => console.log('❌ signaling error', e);
+		ws.onclose = (e) => console.log('🔌 signaling closed', e);
 
 		ws.addEventListener('message', (event) => {
 			const message = JSON.parse(event.data);
-			console.log('Received WebSocket message', message.name);
+			console.log('📨 signaling:', message.name);
+
 			if (message.name === 'PARTNER_FOUND') this.handlePartnerFound(message.data);
 			if (message.name === 'SDP_OFFER') this.handleSdpOffer(JSON.parse(message.data));
 			if (message.name === 'SDP_ANSWER') this.handleSdpAnswer(JSON.parse(message.data));
 			if (message.name === 'SDP_ICE_CANDIDATE') this.handleIceCandidate(JSON.parse(message.data));
 			if (message.name === 'PARTNER_LEFT') {
-				console.log('Stranger left. Show disconnected message.');
-				this.setState('DISCONNECTED_REMOTE');
+				console.log('Stranger left.');
+				this.disconnect('REMOTE');
 			}
 		});
 
 		return ws;
 	}
 
-	// sendInterests(interests) {
-	//     if (this.ws && this.ws.readyState === WebSocket.OPEN && interests.length) {
-	//         const message = {
-	//             name: 'SUBMIT_INTERESTS',
-	//             interests: interests
-	//         };
-	//         console.log('intersts'+message);
-	//         this.ws.send(JSON.stringify(message));
-	//     } else {
-	//         console.error('WebSocket is not connected.');
-	//     }
-	// }
+	_sendSignal(obj) {
+		const payload = JSON.stringify(obj);
+		if (this.sdpExchange && this.sdpExchange.readyState === WebSocket.OPEN) {
+			this.sdpExchange.send(payload);
+		} else {
+			this._wsBuffer.push(payload);
+		}
+	}
 
 	createPeerConnection() {
-		const conn = new RTCPeerConnection();
+		const conn = new RTCPeerConnection({
+			iceServers: [
+				{
+					urls: [
+						'stun:stun.l.google.com:19302',
+						'stun:stun1.l.google.com:19302',
+						'stun:stun2.l.google.com:19302',
+						'stun:stun3.l.google.com:19302'
+					]
+				}
+			],
+			iceCandidatePoolSize: 4
+		});
+
+		// remote media
 		conn.ontrack = (event) => this.options?.onRemoteMedia?.(event.streams[0]);
+
+		// ICE candidates → send via signaling (buffer-safe)
 		conn.onicecandidate = (event) => {
-			if (event.candidate) {
-				this.sdpExchange.send(
-					JSON.stringify({ name: 'SDP_ICE_CANDIDATE', data: JSON.stringify(event.candidate) })
-				);
+			if (!event.candidate) {
+				console.log('ICE gathering complete');
+				return;
 			}
+			console.log('ICE cand:', event.candidate.candidate); // look for typ srflx / relay
+			this._sendSignal({
+				name: 'SDP_ICE_CANDIDATE',
+				data: JSON.stringify(event.candidate)
+			});
 		};
+
+		// connection state (nice visibility + UI)
 		conn.oniceconnectionstatechange = () => {
-			console.log('ICE connection state:', conn.iceConnectionState);
-			if (conn.iceConnectionState === 'connected') {
-				this.setState('CONNECTED');
-			}
+			console.log('ICE state:', conn.iceConnectionState);
+			if (conn.iceConnectionState === 'connected') this.setState('CONNECTED');
 			if (['disconnected', 'failed', 'closed'].includes(conn.iceConnectionState)) {
 				this.setState('DISCONNECTED_REMOTE');
 			}
 		};
+
+		conn.onconnectionstatechange = () => {
+			console.log('PC state:', conn.connectionState);
+			if (conn.connectionState === 'connected') this.setState('CONNECTED');
+			if (['disconnected', 'failed', 'closed'].includes(conn.connectionState)) {
+				this.setState('DISCONNECTED_REMOTE');
+			}
+		};
+
+		// incoming data channel (answerer path)
 		conn.ondatachannel = (event) => {
 			this.dataChannel = this.setupDataChannel(event.channel);
 		};
+
 		return conn;
 	}
 
 	setupDataChannel(channel) {
 		channel.onmessage = (event) => {
-			console.log('📨 Received data channel message', event.data);
+			console.log('📨 DC message:', event.data);
 
 			if (event.data === 'BYE') {
+				console.log('Received BYE, closing connection');
 				this.disconnect('REMOTE');
-				this.setState('DISCONNECTED_REMOTE');
-				console.log('Received BYE message, closing connection');
 				return;
 			}
 
 			try {
 				const parsed = JSON.parse(event.data);
-
 				if (parsed.type === 'CAM_STATE') {
 					this.options?.onRemoteCamState?.(parsed.enabled);
 				} else if (parsed.chat) {
@@ -127,15 +164,14 @@ export class PeerConnection {
 				console.warn('⚠️ Could not parse data channel message:', err);
 			}
 		};
+
 		channel.onclose = () => {
 			console.log('📴 Data channel closed');
 			if (!this.closedByLocal) {
 				this.disconnect('REMOTE');
-				this.setState('DISCONNECTED_REMOTE');
 			} else {
-				console.log('🟢 Local disconnect, skipping redundant DISCONNECTED_REMOTE');
+				console.log('🟢 Local disconnect, skipping redundant remote state');
 			}
-
 			this.closedByLocal = false;
 		};
 
@@ -143,53 +179,61 @@ export class PeerConnection {
 	}
 
 	sendBye() {
-		if (this.dataChannel === null) return console.log('No data channel');
-		if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-			console.log('❗ Data channel not open. Skipping BYE.');
-		} else {
+		if (!this.dataChannel) return console.log('No data channel');
+		if (this.dataChannel.readyState === 'open') {
 			this.dataChannel.send('BYE');
+		} else {
+			console.log('❗ Data channel not open. Skipping BYE.');
 		}
 		this.closedByLocal = true;
-		this.disconnect('LOCAL');
-		this.setState('DISCONNECTED_LOCAL');
+		this.disconnect('LOCAL'); // sets state internally
 	}
 
-	// disconnect(orignator) {
-	//     if (this.peerConnection?.signalingState !== "closed") {
-	//         this.peerConnection.close();
-	//     }
-
-	//     this.dataChannel = null;
-	//     this.peerConnection.close();
-	//     this.peerConnection = this.createPeerConnection();
-	//     this.setState(`DISCONNECTED_${orignator}`);
-	// }
 	disconnect(originator) {
+		// Inform server if we are the one leaving
+		if (originator === 'LOCAL' && this.sdpExchange?.readyState === WebSocket.OPEN) {
+			try {
+				this.sdpExchange.send(JSON.stringify({ name: 'LEAVE' }));
+			} catch (_) {}
+		}
+
 		// Close data channel
 		if (this.dataChannel) {
-			this.dataChannel.close();
+			try {
+				this.dataChannel.close();
+			} catch (_) {}
 			this.dataChannel = null;
 		}
 
 		// Close peer connection
-		if (this.peerConnection?.signalingState !== 'closed') {
-			this.peerConnection.close();
+		if (this.peerConnection && this.peerConnection.signalingState !== 'closed') {
+			try {
+				this.peerConnection.close();
+			} catch (_) {}
 		}
 		this.peerConnection = null;
 
-		// Close WebSocket
+		// Close WebSocket (your backend triggers PARTNER_LEFT when this closes)
 		if (this.sdpExchange?.readyState === WebSocket.OPEN) {
-			this.sdpExchange.close();
+			try {
+				this.sdpExchange.close();
+			} catch (_) {}
 		}
 		this.sdpExchange = null;
+
+		// Reset flags/buffers
+		this._remoteDescSet = false;
+		this._pendingCandidates = [];
+		this._wsBuffer = [];
 
 		this.setState(`DISCONNECTED_${originator}`);
 	}
 
 	setState(state) {
 		this.state = state;
-		this.options.onStateChange(state);
+		this.options?.onStateChange?.(state);
 	}
+
 	handlePartnerFound(instructions) {
 		if (instructions !== 'GO_FIRST') {
 			return console.log('Partner found, waiting for SDP offer ...');
@@ -198,12 +242,12 @@ export class PeerConnection {
 		console.log('Partner found, creating SDP offer and data channel');
 
 		this.tryHandle('PARTNER_FOUND', async () => {
+			// create DC (offerer path)
 			const rawChannel = this.peerConnection.createDataChannel('data-channel');
 			this.dataChannel = this.setupDataChannel(rawChannel);
 
-			// 🔐 Wait until the channel is open before sending messages
 			rawChannel.onopen = () => {
-				console.log('📡 Data channel is open, sending CAM_STATE');
+				console.log('📡 Data channel open, sending CAM_STATE');
 				rawChannel.send(
 					JSON.stringify({
 						type: 'CAM_STATE',
@@ -212,79 +256,79 @@ export class PeerConnection {
 				);
 			};
 
-			// Add tracks
+			// ensure senders are fresh, then add tracks
 			const senders = this.peerConnection.getSenders();
-			senders.forEach((sender) => {
-				if (sender.track) {
-					this.peerConnection.removeTrack(sender);
-				}
-			});
-
-			this.localStream.getTracks().forEach((track) => {
-				this.peerConnection.addTrack(track, this.localStream);
-			});
+			senders.forEach((s) => s.track && this.peerConnection.removeTrack(s));
+			this.localStream
+				.getTracks()
+				.forEach((t) => this.peerConnection.addTrack(t, this.localStream));
 
 			const offer = await this.peerConnection.createOffer();
 			await this.peerConnection.setLocalDescription(offer);
 
-			const offerJson = JSON.stringify(this.peerConnection.localDescription);
-			this.sdpExchange.send(JSON.stringify({ name: 'SDP_OFFER', data: offerJson }));
+			this._sendSignal({
+				name: 'SDP_OFFER',
+				data: JSON.stringify(this.peerConnection.localDescription)
+			});
 		});
 	}
 
 	handleSdpOffer(offer) {
 		this.tryHandle('SDP_OFFER', async () => {
-			console.log('Received SDP offer, creating SDP answer');
 			await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+			this._remoteDescSet = true;
 
-			// 🔧 Remove previous tracks before adding new ones
+			// refresh tracks
 			const senders = this.peerConnection.getSenders();
-			senders.forEach((sender) => {
-				if (sender.track) {
-					this.peerConnection.removeTrack(sender);
-				}
-			});
-
-			this.localStream.getTracks().forEach((track) => {
-				this.peerConnection.addTrack(track, this.localStream);
-			});
+			senders.forEach((s) => s.track && this.peerConnection.removeTrack(s));
+			this.localStream
+				.getTracks()
+				.forEach((t) => this.peerConnection.addTrack(t, this.localStream));
 
 			const answer = await this.peerConnection.createAnswer();
 			await this.peerConnection.setLocalDescription(answer);
-			const answerJson = JSON.stringify(this.peerConnection.localDescription);
-			this.sdpExchange.send(JSON.stringify({ name: 'SDP_ANSWER', data: answerJson }));
+
+			this._sendSignal({
+				name: 'SDP_ANSWER',
+				data: JSON.stringify(this.peerConnection.localDescription)
+			});
+
+			// flush queued ICE
+			for (const c of this._pendingCandidates) {
+				try {
+					await this.peerConnection.addIceCandidate(c);
+				} catch (e) {
+					console.warn(e);
+				}
+			}
+			this._pendingCandidates = [];
 		});
 	}
 
 	handleSdpAnswer(answer) {
-		// only for the "offerer" (the one who sends the SDP offer)
 		this.tryHandle('SDP_ANSWER', async () => {
 			await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+			this._remoteDescSet = true;
 
-			// ✅ Send CAM_STATE once connection is established
-			if (this.dataChannel?.readyState === 'open') {
-				this.dataChannel.send(
-					JSON.stringify({
-						type: 'CAM_STATE',
-						enabled: this.localStream?.getVideoTracks?.()[0]?.enabled ?? true
-					})
-				);
-			} else {
-				this.dataChannel.onopen = () => {
-					this.dataChannel.send(
-						JSON.stringify({
-							type: 'CAM_STATE',
-							enabled: this.localStream?.getVideoTracks?.()[0]?.enabled ?? true
-						})
-					);
-				};
+			for (const c of this._pendingCandidates) {
+				try {
+					await this.peerConnection.addIceCandidate(c);
+				} catch (e) {
+					console.warn(e);
+				}
 			}
+			this._pendingCandidates = [];
 		});
 	}
 
 	handleIceCandidate(iceCandidate) {
 		this.tryHandle('ICE_CANDIDATE', async () => {
-			await this.peerConnection.addIceCandidate(new RTCIceCandidate(iceCandidate));
+			const cand = new RTCIceCandidate(iceCandidate);
+			if (!this._remoteDescSet) {
+				this._pendingCandidates.push(cand);
+			} else {
+				await this.peerConnection.addIceCandidate(cand);
+			}
 		});
 	}
 
@@ -297,18 +341,17 @@ export class PeerConnection {
 	}
 }
 
+// helper to create/init in one call
 export async function setupPeerConnection(options, setInitialState = true) {
 	const pc = new PeerConnection(options, setInitialState);
 	await pc.init();
 	return pc;
 }
 
+// keep your existing wakeup ping
 async function ensureServerAwake() {
 	const lastPing = sessionStorage.getItem('lastServerWake');
-
-	if (lastPing && Date.now() - Number(lastPing) < 5 * 60 * 1000) {
-		return;
-	}
+	if (lastPing && Date.now() - Number(lastPing) < 5 * 60 * 1000) return;
 
 	try {
 		const res = await fetch('https://api.yawnfox.com/ping', { cache: 'no-store' });
