@@ -10,7 +10,6 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 import asyncio
 
-# In-memory state
 websockets: Dict[str, "ManagedWebSocket"] = {}
 partners: Dict[str, str] = {}
 ready_clients: Set[str] = set()

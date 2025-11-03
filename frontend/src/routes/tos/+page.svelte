@@ -1,5 +1,4 @@
 <script>
-	// No JS needed
 </script>
 
 <div class="flex min-h-screen items-center justify-center bg-gray-900 px-6 py-16 text-white">

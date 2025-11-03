@@ -11,7 +11,6 @@ export class PeerConnection {
 		this.options = options;
 		this._setInitialState = setInitialState;
 
-		// runtime flags/buffers
 		this._remoteDescSet = false;
 		this._pendingCandidates = [];
 		this._wsBuffer = [];
@@ -105,20 +104,20 @@ export class PeerConnection {
 		// remote media
 		conn.ontrack = (event) => this.options?.onRemoteMedia?.(event.streams[0]);
 
-		// ICE candidates → send via signaling (buffer-safe)
+		// ICE candidates → send via signaling
 		conn.onicecandidate = (event) => {
 			if (!event.candidate) {
 				console.log('ICE gathering complete');
 				return;
 			}
-			console.log('ICE cand:', event.candidate.candidate); // look for typ srflx / relay
+			console.log('ICE cand:', event.candidate.candidate);
 			this._sendSignal({
 				name: 'SDP_ICE_CANDIDATE',
 				data: JSON.stringify(event.candidate)
 			});
 		};
 
-		// connection state (nice visibility + UI)
+		// connection state
 		conn.oniceconnectionstatechange = () => {
 			console.log('ICE state:', conn.iceConnectionState);
 			if (conn.iceConnectionState === 'connected') this.setState('CONNECTED');
@@ -135,7 +134,7 @@ export class PeerConnection {
 			}
 		};
 
-		// incoming data channel (answerer path)
+		// incoming data channel
 		conn.ondatachannel = (event) => {
 			this.dataChannel = this.setupDataChannel(event.channel);
 		};
@@ -186,7 +185,7 @@ export class PeerConnection {
 			console.log('❗ Data channel not open. Skipping BYE.');
 		}
 		this.closedByLocal = true;
-		this.disconnect('LOCAL'); // sets state internally
+		this.disconnect('LOCAL');
 	}
 
 	disconnect(originator) {
@@ -242,7 +241,6 @@ export class PeerConnection {
 		console.log('Partner found, creating SDP offer and data channel');
 
 		this.tryHandle('PARTNER_FOUND', async () => {
-			// create DC (offerer path)
 			const rawChannel = this.peerConnection.createDataChannel('data-channel');
 			this.dataChannel = this.setupDataChannel(rawChannel);
 

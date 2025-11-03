@@ -61,6 +61,7 @@
 			peer = null;
 		};
 	});
+
 	async function createPeer() {
 		peer = await setupPeerConnection(
 			{
@@ -94,7 +95,7 @@
 
 	function startPairing() {
 		if (!peer?.sdpExchange || peer.sdpExchange.readyState !== WebSocket.OPEN) {
-			console.warn('⏳ Cannot start pairing – WebSocket not ready');
+			console.warn('Cannot start pairing – WebSocket not ready');
 			return;
 		}
 
@@ -129,7 +130,7 @@
 			});
 
 			// Logging
-			console.log('📤 Sending CAM_STATE to peer:', camStateMsg);
+			console.log('Sending CAM_STATE to peer:', camStateMsg);
 
 			// Guarded send
 			if (peer?.dataChannel?.readyState === 'open') {
