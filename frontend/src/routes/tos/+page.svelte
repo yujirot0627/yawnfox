@@ -1,76 +1,78 @@
-<script>
-</script>
+<svelte:head>
+	<title>Terms of Service - Yawnfox</title>
+	<meta name="description" content="Read the Terms of Service for Yawnfox. Understand the rules for using our anonymous video chat platform safely." />
+	<link rel="canonical" href="https://yawnfox.com/tos" />
+</svelte:head>
 
-<div class="flex min-h-screen items-center justify-center bg-gray-900 px-6 py-16 text-white">
-	<div class="w-full max-w-3xl space-y-10">
-		<!-- Header Section -->
-		<div class="flex items-center space-x-4">
-			<img src="/icon.png" alt="Yawnfox icon" class="h-16 w-16 rounded-xl opacity-80 shadow" />
-			<h1 class="text-4xl font-extrabold tracking-tight text-yellow-400 sm:text-5xl">
-				Terms of Service
-			</h1>
+<div class="min-h-screen bg-gray-900 text-gray-300 font-sans selection:bg-yellow-400 selection:text-black">
+	<!-- Navbar / Back Link -->
+	<nav class="sticky top-0 z-10 w-full bg-gray-900/90 backdrop-blur-md border-b border-white/5 py-4 px-6 mb-8">
+		<div class="max-w-3xl mx-auto flex items-center">
+			<a href="/" class="text-sm font-medium text-gray-400 hover:text-white transition flex items-center gap-2">
+				<span>←</span> Back to Home
+			</a>
 		</div>
+	</nav>
 
-		<!-- Intro -->
-		<div
-			class="space-y-6 rounded-2xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur-md sm:p-8"
-		>
-			<p class="text-lg leading-relaxed text-gray-300">
-				By accessing or using Yawnfox, you agree to abide by the following terms. These rules exist
-				to ensure a safe, respectful, and enjoyable experience for everyone.
-			</p>
+	<!-- Main Content -->
+	<main class="max-w-3xl mx-auto px-6 pb-24">
+		<!-- Header -->
+		<header class="mb-12 border-b border-white/10 pb-8">
+			<h1 class="text-4xl font-bold text-white mb-4">Terms of Service</h1>
+			<p class="text-sm text-gray-500">Last updated: {new Date().toLocaleDateString()}</p>
+		</header>
 
-			<!-- Rules List -->
-			<ul class="list-none space-y-4 text-base leading-relaxed text-gray-200">
-				<li>👤 You must be <strong>18 years or older</strong> to use this platform.</li>
-				<li>
-					🛑 Any form of <strong
-						>harassment, abuse, hate speech, or sexually explicit behavior</strong
-					> is strictly prohibited.
-				</li>
-				<li>
-					📵 <strong>Recording, storing, or redistributing</strong> any part of the video chat
-					sessions is not allowed <strong>unless both participants explicitly agree</strong>.
-				</li>
-				<li>
-					⚠️ Violations of these terms may lead to <strong>temporary or permanent bans</strong> without
-					notice.
-				</li>
-			</ul>
+		<!-- Content Sections -->
+		<div class="space-y-12 text-lg leading-relaxed">
+			
+			<section>
+				<h2 class="text-2xl font-bold text-white mb-4">1. Acceptance of Terms</h2>
+				<p>
+					By accessing or using Yawnfox, you agree to be bound by these Terms. If you do not agree to these terms, please do not use our services.
+				</p>
+			</section>
+
+			<section>
+				<h2 class="text-2xl font-bold text-white mb-4">2. Eligibility</h2>
+				<p>
+					You must be at least <strong>18 years old</strong> to use this platform. By using Yawnfox, you represent and warrant that you meet this age requirement.
+				</p>
+			</section>
+
+			<section>
+				<h2 class="text-2xl font-bold text-white mb-4">3. User Conduct</h2>
+				<p class="mb-4">
+					We prioritize a safe and respectful environment. You agree NOT to:
+				</p>
+				<ul class="list-disc pl-6 space-y-2 marker:text-yellow-400">
+					<li>Harass, abuse, or threaten others.</li>
+					<li>Share sexually explicit, violent, or illegal content.</li>
+					<li>Record or distribute conversations without consent.</li>
+					<li>Use the platform for spam or solicitation.</li>
+				</ul>
+			</section>
+
+			<section>
+				<h2 class="text-2xl font-bold text-white mb-4">4. Content & Responsibility</h2>
+				<p>
+					You are solely responsible for your interactions. Yawnfox does not monitor every conversation in real-time and assumes no liability for user-generated content.
+				</p>
+			</section>
+
+			<section>
+				<h2 class="text-2xl font-bold text-white mb-4">5. Account Termination</h2>
+				<p>
+					We reserve the right to ban or suspend access to any user who violates these terms, without prior notice.
+				</p>
+			</section>
+
+			<section>
+				<h2 class="text-2xl font-bold text-white mb-4">6. Disclaimer</h2>
+				<p class="text-gray-400 italic">
+					The service is provided "as is" without warranties of any kind. We are not responsible for connection issues or the actions of other users.
+				</p>
+			</section>
+
 		</div>
-
-		<!-- User Responsibility Section -->
-		<div
-			class="space-y-4 rounded-2xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur-md sm:p-8"
-		>
-			<h2 class="text-2xl font-bold text-white">User Responsibility</h2>
-			<p class="leading-relaxed text-gray-300">
-				You are fully responsible for your own conduct while using Yawnfox. The platform does not
-				monitor or moderate chats in real-time and is not liable for any content shared by users.
-			</p>
-			<p class="leading-relaxed text-gray-300">
-				<strong
-					>By using Yawnfox, you agree to comply with all applicable local laws regarding online
-					behavior and content.</strong
-				>
-			</p>
-		</div>
-
-		<!-- Disclaimer Section -->
-		<div
-			class="space-y-4 rounded-2xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur-md sm:p-8"
-		>
-			<h2 class="text-2xl font-bold text-white">Disclaimer</h2>
-			<p class="leading-relaxed text-gray-300">
-				Yawnfox is provided "as is" without warranties of any kind. We do not guarantee
-				uninterrupted service or connection quality.
-			</p>
-		</div>
-
-		<!-- Footer Note -->
-		<p class="border-t border-gray-700 pt-6 text-center text-sm text-gray-500">
-			These terms may be updated periodically. Your continued use of Yawnfox implies acceptance of
-			the current version.
-		</p>
-	</div>
+	</main>
 </div>

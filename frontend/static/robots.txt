@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Allow: /faq
+Allow: /tos
+Allow: /privacy
+Disallow: /chat
+Disallow: /chat/
+
+Sitemap: https://yawnfox.com/sitemap.xml
