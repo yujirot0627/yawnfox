@@ -47,8 +47,8 @@ export class PeerConnection {
 		await ensureServerAwake();
 
 		const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-		//const ws = new WebSocket(`${protocol}://${import.meta.env.VITE_API_DOMAIN}/api/matchmaking`);
-		const ws = new WebSocket(`ws://localhost:8000/api/matchmaking`);
+		const ws = new WebSocket(`${protocol}://${import.meta.env.VITE_API_DOMAIN}/api/matchmaking`);
+		//const ws = new WebSocket(`ws://localhost:8000/api/matchmaking`);
 
 		ws.addEventListener('open', () => {
 			console.log('✅ signaling connected');
