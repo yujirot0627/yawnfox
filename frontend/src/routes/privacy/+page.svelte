@@ -1,3 +1,7 @@
+<script>
+	import { ArrowLeft } from 'lucide-svelte';
+</script>
+
 <svelte:head>
 	<title>Privacy Policy - Yawnfox</title>
 	<meta name="description" content="Yawnfox Privacy Policy. We do not store personal data, record calls, or track user activity. Read how we protect your anonymity." />
@@ -9,7 +13,7 @@
 	<nav class="sticky top-0 z-10 w-full bg-gray-900/90 backdrop-blur-md border-b border-white/5 py-4 px-6 mb-8">
 		<div class="max-w-3xl mx-auto flex items-center">
 			<a href="/" class="text-sm font-medium text-gray-400 hover:text-white transition flex items-center gap-2">
-				<span>←</span> Back to Home
+<ArrowLeft class="h-4 w-4" /> Back to Home
 			</a>
 		</div>
 	</nav>

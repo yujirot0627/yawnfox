@@ -1,6 +1,7 @@
 <script>
 	import { onMount, tick } from 'svelte';
 	import { setupPeerConnection } from '$lib/peer.js';
+	import { Video, VideoOff, MessageCircle, Settings, X, TriangleAlert } from 'lucide-svelte';
 
 	let peer;
 	let currentState = 'NOT_CONNECTED';
@@ -43,7 +44,7 @@
 			addMessage('You are now chatting with a stranger.', 'system');
 			if (topics.length > 0) addMessage(`Topics: ${topics.join(', ')}`, 'system');
 		} else if (state === 'CAMERA_FAILED') {
-			statusMessage = '⚠️ Camera permission denied!';
+			statusMessage = 'Camera permission denied!';
 			showOverlay = true;
 		} else if (state === 'DISCONNECTED_LOCAL') {
 			statusMessage = 'You disconnected';
@@ -270,6 +271,9 @@
 									{/each}
 								</div>
 							{/if}
+						{:else if currentState === 'CAMERA_FAILED'}
+							<TriangleAlert class="mb-3 h-12 w-12 text-yellow-400" />
+							<p class="text-lg font-semibold">{statusMessage}</p>
 						{:else}
 							<p class="text-lg font-semibold">{statusMessage}</p>
 						{/if}
@@ -280,7 +284,7 @@
 					<div
 						class="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gray-900/90"
 					>
-						<span class="mb-2 text-4xl">📷🚫</span>
+						<VideoOff class="mb-2 h-10 w-10 text-gray-400" />
 						<p class="font-medium text-gray-400">Camera Off</p>
 					</div>
 				{/if}
@@ -339,7 +343,7 @@
 
 				{#if !isCamOn}
 					<div class="absolute inset-0 flex items-center justify-center bg-gray-800">
-						<span class="text-2xl">🚫</span>
+						<VideoOff class="h-6 w-6 text-gray-400" />
 					</div>
 				{/if}
 			</div>
@@ -437,7 +441,11 @@
 					class={`flex h-10 w-10 items-center justify-center rounded-full transition-colors ${isCamOn ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-red-500/20 text-red-500 hover:bg-red-500/30'}`}
 					title="Toggle Camera"
 				>
-					{isCamOn ? '📷' : '🚫'}
+					{#if isCamOn}
+						<Video class="h-5 w-5" />
+					{:else}
+						<VideoOff class="h-5 w-5" />
+					{/if}
 				</button>
 
 				<button
@@ -445,7 +453,7 @@
 					class={`flex h-10 w-10 items-center justify-center rounded-full transition-colors ${showMessages ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-gray-800 text-gray-500'}`}
 					title="Toggle Messages"
 				>
-					💬
+					<MessageCircle class="h-5 w-5" />
 				</button>
 
 				<button
@@ -453,7 +461,7 @@
 					class="flex h-10 w-10 items-center justify-center rounded-full bg-gray-800 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
 					title="Settings"
 				>
-					⚙️
+					<Settings class="h-5 w-5" />
 				</button>
 			</div>
 		</div>
@@ -467,9 +475,13 @@
 			<div class="w-full max-w-sm rounded-2xl border border-gray-800 bg-gray-900 p-6 shadow-2xl">
 				<div class="mb-6 flex items-center justify-between">
 					<h2 class="text-xl font-bold text-white">Video Settings</h2>
-					<button on:click={() => (showSettings = false)} class="text-gray-400 hover:text-white"
-						>✕</button
+					<button
+						on:click={() => (showSettings = false)}
+						class="text-gray-400 hover:text-white"
+						aria-label="Close settings"
 					>
+						<X class="h-5 w-5" />
+					</button>
 				</div>
 
 				<div class="space-y-4">

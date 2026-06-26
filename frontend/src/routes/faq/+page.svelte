@@ -1,4 +1,5 @@
 <script>
+	import { ArrowLeft, MessageCircle } from 'lucide-svelte';
 </script>
 
 <svelte:head>
@@ -44,7 +45,7 @@
 	<nav class="sticky top-0 z-10 w-full bg-gray-900/90 backdrop-blur-md border-b border-white/5 py-4 px-6 mb-8">
 		<div class="max-w-3xl mx-auto flex items-center">
 			<a href="/" class="text-sm font-medium text-gray-400 hover:text-white transition flex items-center gap-2">
-				<span>←</span> Back to Home
+<ArrowLeft class="h-4 w-4" /> Back to Home
 			</a>
 		</div>
 	</nav>
@@ -67,7 +68,7 @@
 
 			<article>
 				<h3 class="text-xl font-bold text-white mb-2">How do I hide messages?</h3>
-				<p>Tap the 💬 icon in the control bar to toggle the message overlay on or off.</p>
+				<p>Tap the <MessageCircle class="inline h-4 w-4 align-text-bottom" /> icon in the control bar to toggle the message overlay on or off.</p>
 			</article>
 
 			<article>

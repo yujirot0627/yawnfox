@@ -1,5 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
+	import { Tag, Zap, Video, ArrowRight } from 'lucide-svelte';
 
 	let showConfirmation = false;
 	let skipNextTime = false;
@@ -145,19 +146,19 @@
 			<h2 class="mb-12 text-3xl font-bold text-white">How it works</h2>
 			<div class="flex flex-col items-center justify-center gap-8 md:flex-row md:gap-12">
 				<div class="max-w-xs">
-					<div class="mb-4 text-4xl">🏷️</div>
+					<div class="mb-4 flex justify-center"><Tag class="h-9 w-9 text-yellow-400" /></div>
 					<h3 class="text-lg font-bold">1. Add Topics</h3>
 					<p class="mt-2 text-sm text-gray-500">Optional. Enter up to 3 interests.</p>
 				</div>
-				<div class="hidden text-2xl text-gray-600 md:block">→</div>
+				<ArrowRight class="hidden h-6 w-6 text-gray-600 md:block" />
 				<div class="max-w-xs">
-					<div class="mb-4 text-4xl">⚡</div>
+					<div class="mb-4 flex justify-center"><Zap class="h-9 w-9 text-yellow-400" /></div>
 					<h3 class="text-lg font-bold">2. Start Matching</h3>
 					<p class="mt-2 text-sm text-gray-500">One click to find a partner.</p>
 				</div>
-				<div class="hidden text-2xl text-gray-600 md:block">→</div>
+				<ArrowRight class="hidden h-6 w-6 text-gray-600 md:block" />
 				<div class="max-w-xs">
-					<div class="mb-4 text-4xl">🎥</div>
+					<div class="mb-4 flex justify-center"><Video class="h-9 w-9 text-yellow-400" /></div>
 					<h3 class="text-lg font-bold">3. Chat</h3>
 					<p class="mt-2 text-sm text-gray-500">Video + Text. Skip anytime.</p>
 				</div>
