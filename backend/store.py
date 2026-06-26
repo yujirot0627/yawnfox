@@ -519,3 +519,12 @@ async def pubsub_listener() -> None:
             logger.warning(f"pubsub listener error, reconnecting: {e}")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10)
+        finally:
+            # R3: always close the old PubSub before reconnecting (or on exit)
+            # so repeated reconnects don't leak connections.
+            if _pubsub is not None:
+                try:
+                    await _pubsub.aclose()
+                except Exception:
+                    pass
+                _pubsub = None

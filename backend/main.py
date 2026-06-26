@@ -36,6 +36,18 @@ match_event = asyncio.Event()
 # Empty -> allow all (development).
 _cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGIN", "").split(",") if o.strip()]
 
+# Trust the X-Forwarded-For header for the client IP only when explicitly enabled.
+# Default off: it is client-controllable and could be spoofed to evade the rate
+# limiter. On Fly, fly-client-ip (set by the trusted proxy) is preferred anyway.
+_trust_xff = os.environ.get("TRUST_XFF", "false").strip().lower() == "true"
+
+# Maximum accepted WebSocket text frame (bytes). Also enforced at the protocol
+# layer via uvicorn --ws-max-size; this is a belt-and-suspenders app-level guard.
+MAX_MESSAGE_BYTES = 65536
+
+# Message names that may be relayed verbatim to a partner (WebRTC signaling).
+ALLOWED_RELAY = {"SDP_OFFER", "SDP_ANSWER", "SDP_ICE_CANDIDATE"}
+
 # --- Helper Classes ---
 
 class ManagedWebSocket:
@@ -87,12 +99,16 @@ def _origin_allowed(origin: Optional[str]) -> bool:
 
 def _client_ip(websocket: WebSocket) -> str:
     headers = websocket.headers
-    forwarded = headers.get("x-forwarded-for", "").split(",")[0].strip()
-    return (
-        headers.get("fly-client-ip")
-        or forwarded
-        or (websocket.client.host if websocket.client else "unknown")
-    )
+    # Prefer the trusted-proxy header. Only fall back to X-Forwarded-For when
+    # explicitly allowed (TRUST_XFF=true); otherwise use the raw peer address.
+    fly_ip = headers.get("fly-client-ip")
+    if fly_ip:
+        return fly_ip
+    if _trust_xff:
+        forwarded = headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+    return websocket.client.host if websocket.client else "unknown"
 
 
 # --- Core Logic ---
@@ -211,15 +227,28 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             try:
                 message = await websocket.receive_text()
-                data = json.loads(message)
-            except json.JSONDecodeError:
-                logger.warning(f"[{ws_id}] Invalid JSON.")
-                continue
             except WebSocketDisconnect:
                 raise  # handled in outer except
             except Exception as e:
                 logger.error(f"[{ws_id}] Receive error: {e}")
                 break
+
+            # S1: reject oversized frames (app-level guard alongside --ws-max-size).
+            if len(message) > MAX_MESSAGE_BYTES:
+                logger.warning(f"[{ws_id}] Message too big ({len(message)} bytes); closing.")
+                await websocket.close(code=1009)  # 1009 = Message Too Big
+                break
+
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError:
+                logger.warning(f"[{ws_id}] Invalid JSON.")
+                continue
+
+            # R5: ignore valid-but-non-object JSON (arrays, strings, numbers)
+            # instead of crashing the receive loop and dropping the connection.
+            if not isinstance(data, dict):
+                continue
 
             msg_name = data.get("name")
 
@@ -230,11 +259,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Parse topics
                 raw_topics = data.get("topics", [])
+                if not isinstance(raw_topics, list):
+                    raw_topics = []
                 if not raw_topics and data.get("topic"):
                     raw_topics = [data.get("topic")]
                 normalized_topics = [
                     str(t).strip().lower() for t in raw_topics if str(t).strip()
                 ]
+                # S2: cap each topic to 50 chars and the list to 3 (server side).
+                normalized_topics = [t[:50] for t in normalized_topics][:3]
 
                 await store.enqueue_waiting(ws_id, normalized_topics)
                 await store.trigger_wakeup()
@@ -252,6 +285,11 @@ async def websocket_endpoint(websocket: WebSocket):
             # longer passes through this server.
             # Order matters -> await send
             else:
+                # S4: only relay whitelisted WebRTC signaling messages; ignore
+                # anything else so arbitrary payloads can't be forwarded to peers.
+                if msg_name not in ALLOWED_RELAY:
+                    logger.debug(f"[{ws_id}] Ignoring non-relayable message: {msg_name}")
+                    continue
                 partner_id = await store.get_partner(ws_id)
                 if partner_id:
                     await store.route(partner_id, data)
