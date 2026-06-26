@@ -1,16 +1,20 @@
 # app/main.py
+import os
 import json
 import uuid
-import time
 import asyncio
 import logging
-from typing import Dict, Set, Optional
+from typing import Dict, Optional
 from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
 from starlette.routing import WebSocketRoute, Route
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.responses import JSONResponse
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+
+import store
 
 # Configure logging
 logging.basicConfig(
@@ -19,15 +23,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("yawnfox")
 
-# --- Global State ---
-websockets: Dict[str, "ManagedWebSocket"] = {}
-partners: Dict[str, str] = {}
+# --- Per-process state ---
+# Only the live WebSocket objects are kept in memory; every piece of shared
+# state (waiting pool, partner mapping, presence) lives in Redis (see store.py)
+# so the app can run as multiple horizontally-scaled instances.
+local_websockets: Dict[str, "ManagedWebSocket"] = {}
 
-# Structure: ws_id -> {"topics": frozenset({...}), "time": monotonic_time}
-ready_clients: Dict[str, dict] = {}
-
+# Local matcher wake signal (also nudged across instances via Redis pub/sub).
 match_event = asyncio.Event()
-state_lock = asyncio.Lock()
+
+# Allowed browser origins for the signaling WebSocket and /ping (comma separated).
+# Empty -> allow all (development).
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGIN", "").split(",") if o.strip()]
 
 # --- Helper Classes ---
 
@@ -61,128 +68,155 @@ class ManagedWebSocket:
                 except Exception:
                     pass
 
+# --- Delivery / helpers ---
+
+async def deliver_local(ws_id: str, text: str) -> bool:
+    """Deliver a raw text frame to a locally-connected client. Returns success."""
+    ws = local_websockets.get(ws_id)
+    if ws is None:
+        return False
+    await ws.send_text(text)
+    return True
+
+
+def _origin_allowed(origin: Optional[str]) -> bool:
+    if not _cors_origins:
+        return True  # not configured -> allow (dev)
+    return bool(origin) and origin in _cors_origins
+
+
+def _client_ip(websocket: WebSocket) -> str:
+    headers = websocket.headers
+    forwarded = headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return (
+        headers.get("fly-client-ip")
+        or forwarded
+        or (websocket.client.host if websocket.client else "unknown")
+    )
+
+
 # --- Core Logic ---
 
 async def soft_unpair(ws_id: str):
     """
     Unpairs a user from their partner without closing the connection.
     Notifies the partner they have been left.
-    MUST be called under state_lock if used in concurrent contexts.
     """
-    partner_id = partners.pop(ws_id, None)
+    partner_id = await store.clear_partner(ws_id)
     if partner_id:
-        partners.pop(partner_id, None)
-        partner_ws = websockets.get(partner_id)
-        if partner_ws:
-            # Notify partner they are alone
-            asyncio.create_task(partner_ws.send_text(json.dumps({"name": "PARTNER_LEFT"})))
+        asyncio.create_task(store.route(partner_id, {"name": "PARTNER_LEFT"}))
+
 
 async def matcher_loop():
-    """Background task to match waiting clients."""
+    """Background task to match waiting clients (coordinated across instances
+    by a Redis lock; every instance runs this so the matcher is not a SPOF)."""
     logger.info("Matcher loop started.")
     while True:
-        await match_event.wait()
-        
-        # Keep matching until no pairs can be formed
-        while True:
-            async with state_lock:
-                if len(ready_clients) < 2:
-                    match_event.clear()
-                    break
+        try:
+            # Wake on a local/cross-instance signal, or poll as a fallback.
+            try:
+                await asyncio.wait_for(match_event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+            match_event.clear()
 
-                # Sort by time waiting (Oldest first) ensuring fairness
-                sorted_clients = sorted(ready_clients.items(), key=lambda item: item[1]['time'])
-                
-                candidate_a_id, data_a = sorted_clients[0]
-                topics_a = data_a['topics']
-                
-                best_match_id = None
-                
-                # 1. Try to find a topic overlap
-                if topics_a:
-                    for other_id, other_data in sorted_clients[1:]:
-                        topics_b = other_data['topics']
-                        if not topics_a.isdisjoint(topics_b):
-                            best_match_id = other_id
-                            break
-                            
-                # 2. Fallback: Pick the longest waiting available person (first in rest of list)
-                if not best_match_id:
-                    best_match_id = sorted_clients[1][0]
+            if await store.waiting_count() < 2:
+                continue
+            if not await store.try_acquire_matcher_lock():
+                continue  # another instance is matching right now
+            try:
+                await store.run_matcher_rounds()
+            finally:
+                await store.release_matcher_lock()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Matcher loop error: {e}")
+            await asyncio.sleep(0.5)
 
-                # --- Execute Match ---
-                # Remove from pool immediately
-                wait_data_a = ready_clients.pop(candidate_a_id)
-                wait_data_b = ready_clients.pop(best_match_id)
-                
-                ws_a = websockets.get(candidate_a_id)
-                ws_b = websockets.get(best_match_id)
 
-                # Check connection health before establishing
-                if ws_a and not ws_a.closed and ws_b and not ws_b.closed:
-                    partners[candidate_a_id] = best_match_id
-                    partners[best_match_id] = candidate_a_id
-                    
-                    logger.info(f"Match formed: {candidate_a_id} <> {best_match_id}")
-
-                    # Tasks for sending to avoid blocking lock/loop
-                    asyncio.create_task(ws_a.send_text(json.dumps({"name": "PARTNER_FOUND", "data": "GO_FIRST"})))
-                    asyncio.create_task(ws_b.send_text(json.dumps({"name": "PARTNER_FOUND", "data": "WAIT"})))
-                else:
-                    # Someone disconnected during match attempt, return survivor to pool priority
-                    if ws_a and not ws_a.closed:
-                        ready_clients[candidate_a_id] = wait_data_a
-                    if ws_b and not ws_b.closed:
-                        ready_clients[best_match_id] = wait_data_b
-            
-            # Brief yield to let other tasks run (like IO)
-            await asyncio.sleep(0)
+async def heartbeat_loop():
+    """Periodically extend TTLs for this instance's live clients so idle
+    waiting users are not garbage-collected, and dead instances self-heal."""
+    while True:
+        try:
+            await asyncio.sleep(30)
+            if local_websockets:
+                await store.refresh(list(local_websockets.keys()))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Heartbeat error: {e}")
 
 
 async def cleanup(ws_id: str):
-    """Robust cleanup for a disconnecting user. Called on disconnect."""
-    ws = None
-    async with state_lock:
-        # Guard: already cleaned
-        ws = websockets.get(ws_id)
-        if ws is None:
-            return
+    """Robust cleanup for a disconnecting user. Called on any exit path."""
+    ws = local_websockets.pop(ws_id, None)
 
-        # Remove from wait pool
-        ready_clients.pop(ws_id, None)
-
-        # Unpair and notify partner
-        await soft_unpair(ws_id)
-
-        # Remove socket ref
-        ws = websockets.pop(ws_id, None)
+    # Unpair and notify partner, drop from wait pool, drop presence.
+    await soft_unpair(ws_id)
+    await store.remove_waiting(ws_id)
+    await store.unregister_connection(ws_id)
 
     if ws:
         await ws.safe_close()
-
     logger.info(f"[{ws_id}] Cleaned up.")
 
+
 async def websocket_endpoint(websocket: WebSocket):
+    # Origin allow-list (cheap rejection before doing any work).
+    origin = websocket.headers.get("origin")
+    if not _origin_allowed(origin):
+        logger.warning(f"Rejected WS from disallowed origin: {origin}")
+        await websocket.close(code=1008)
+        return
+
+    # Rate limit per client IP (sliding window in Redis).
+    ip = _client_ip(websocket)
+    allowed = await store.check_rate_limit(ip)
+
     await websocket.accept()
+
+    if not allowed:
+        logger.info(f"Rate limited connection from {ip}")
+        try:
+            await websocket.send_text(json.dumps({
+                "name": "RATE_LIMITED",
+                "message": "Too many connection attempts. Please wait a minute and try again.",
+            }))
+        except Exception:
+            pass
+        await websocket.close(code=1013)  # 1013 = Try Again Later
+        return
+
+    if not store.is_ready():
+        try:
+            await websocket.send_text(json.dumps({
+                "name": "SERVER_UNAVAILABLE",
+                "message": "Server is temporarily unavailable. Please try again shortly.",
+            }))
+        except Exception:
+            pass
+        await websocket.close(code=1011)
+        return
+
     ws_id = str(uuid.uuid4())
     ws = ManagedWebSocket(websocket, ws_id, on_send_fail=lambda _id: asyncio.create_task(cleanup(_id)))
-    
-    async with state_lock:
-        websockets[ws_id] = ws
-    
-    logger.info(f"[{ws_id}] Connected.")
+    local_websockets[ws_id] = ws
+    await store.register_connection(ws_id)
+
+    logger.info(f"[{ws_id}] Connected from {ip}.")
 
     try:
         while True:
             try:
-                # Starlette handles timeouts internally if configured, no extra timeout needed here
                 message = await websocket.receive_text()
                 data = json.loads(message)
             except json.JSONDecodeError:
                 logger.warning(f"[{ws_id}] Invalid JSON.")
                 continue
             except WebSocketDisconnect:
-                raise # handled in outer except
+                raise  # handled in outer except
             except Exception as e:
                 logger.error(f"[{ws_id}] Receive error: {e}")
                 break
@@ -190,69 +224,41 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_name = data.get("name")
 
             if msg_name == "PAIRING_START":
-                async with state_lock:
-                    # Ensure clean slate (using soft_unpair so we don't close current socket)
-                    if ws_id in ready_clients:
-                        del ready_clients[ws_id]
-                    
-                    await soft_unpair(ws_id)
+                # Ensure clean slate (soft_unpair so we don't close current socket).
+                await store.remove_waiting(ws_id)
+                await soft_unpair(ws_id)
 
-                    # Parse topics
-                    raw_topics = data.get("topics", [])
-                    if not raw_topics and data.get("topic"):
-                        raw_topics = [data.get("topic")]
-                    
-                    normalized_topics = frozenset(
-                        str(t).strip().lower() 
-                        for t in raw_topics 
-                        if str(t).strip()
-                    )
+                # Parse topics
+                raw_topics = data.get("topics", [])
+                if not raw_topics and data.get("topic"):
+                    raw_topics = [data.get("topic")]
+                normalized_topics = [
+                    str(t).strip().lower() for t in raw_topics if str(t).strip()
+                ]
 
-                    ready_clients[ws_id] = {
-                        "topics": normalized_topics,
-                        "time": time.monotonic()
-                    }
-                    
-                    # Trigger matcher
-                    match_event.set()
+                await store.enqueue_waiting(ws_id, normalized_topics)
+                await store.trigger_wakeup()
 
             elif msg_name == "PAIRING_ABORT":
-                async with state_lock:
-                    if ws_id in ready_clients:
-                        del ready_clients[ws_id]
-                    if len(ready_clients) < 2:
-                        match_event.clear()
+                await store.remove_waiting(ws_id)
 
             elif msg_name == "LEAVE":
                 # User manually signalling leave (next button)
-                async with state_lock:
-                    if ws_id in ready_clients:
-                        del ready_clients[ws_id]
-                    await soft_unpair(ws_id)
+                await store.remove_waiting(ws_id)
+                await soft_unpair(ws_id)
 
             elif msg_name == "CHAT":
                 # CHAT is fire-and-forget
-                partner_ws = None
-                async with state_lock:
-                    partner_id = partners.get(ws_id)
-                    if partner_id:
-                        partner_ws = websockets.get(partner_id)
-                
-                if partner_ws:
-                    asyncio.create_task(partner_ws.send_text(json.dumps(data)))
-            
-        
+                partner_id = await store.get_partner(ws_id)
+                if partner_id:
+                    asyncio.create_task(store.route(partner_id, data))
+
             # Generic signaling relay (SDP, ICE candidates, etc.)
             # Order matters -> await send
             else:
-                partner_ws = None
-                async with state_lock:
-                    partner_id = partners.get(ws_id)
-                    if partner_id:
-                        partner_ws = websockets.get(partner_id)
-
-                if partner_ws:
-                    await partner_ws.send_text(json.dumps(data))
+                partner_id = await store.get_partner(ws_id)
+                if partner_id:
+                    await store.route(partner_id, data)
 
     except WebSocketDisconnect:
         logger.info(f"[{ws_id}] Disconnected.")
@@ -269,21 +275,48 @@ async def websocket_endpoint(websocket: WebSocket):
 async def lifespan(app: Starlette):
     # Startup
     logger.info("Server starting...")
-    matcher_task = asyncio.create_task(matcher_loop())
+    store.set_local_delivery(deliver_local)
+    store.set_wakeup_callback(match_event.set)
+    await store.connect()
+
+    tasks = [
+        asyncio.create_task(store.pubsub_listener()),
+        asyncio.create_task(matcher_loop()),
+        asyncio.create_task(heartbeat_loop()),
+    ]
     yield
     # Shutdown
     logger.info("Server shutting down...")
-    matcher_task.cancel()
-    try:
-        await matcher_task
-    except asyncio.CancelledError:
-        pass
+    for t in tasks:
+        t.cancel()
+    for t in tasks:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    await store.close()
+
 
 async def ping(request):
-    return JSONResponse({"message": "Server is awake"})
+    return JSONResponse({
+        "message": "Server is awake",
+        "instance": store.instance_id(),
+        "redis": store.is_ready(),
+    })
+
+
+middleware = [
+    Middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins or ["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+]
 
 app = Starlette(
     lifespan=lifespan,
+    middleware=middleware,
     routes=[
         Route("/ping", ping),
         WebSocketRoute("/api/matchmaking", websocket_endpoint),
