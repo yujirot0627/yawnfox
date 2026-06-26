@@ -11,6 +11,7 @@
 	let layoutMode = 'facetime';
 	let showSettings = false;
 	let showMessages = true;
+	let isChatReady = false; // true once the WebRTC data channel is open
 
 	let localVideo;
 	let remoteVideo;
@@ -24,6 +25,10 @@
 	function setState(state) {
 		currentState = state;
 		console.log('state: ', state);
+
+		// Chat is gated on the data channel being open (peer.js drives it true on
+		// open); reset on any non-connected transition.
+		if (state !== 'CONNECTED') isChatReady = false;
 
 		if (state === 'CONNECTING') {
 			statusMessage = 'Looking for strangers...';
@@ -59,12 +64,12 @@
 	}
 
 	function addMessage(text, sender) {
-		const msg = { id: Date.now(), text, sender };
+		const msg = { id: crypto.randomUUID(), text, sender };
 		messages = [...messages, msg];
 
-		// Capacity rule: overflow logic (keep last 8)
-		if (messages.length > 8) {
-			messages = messages.slice(messages.length - 8);
+		// Capacity rule: overflow logic (keep last 20)
+		if (messages.length > 20) {
+			messages = messages.slice(messages.length - 20);
 		}
 	}
 
@@ -114,7 +119,8 @@
 			onRemoteCamState: (enabled) => {
 				isRemoteCamOn = enabled;
 			},
-			onChatMessage: handleChatMessage
+			onChatMessage: handleChatMessage,
+			onChatReady: (ready) => (isChatReady = ready)
 		});
 
 		isRemoteCamOn = true;
@@ -134,7 +140,8 @@
 				onRemoteCamState: (enabled) => {
 					isRemoteCamOn = enabled;
 				},
-				onChatMessage: handleChatMessage
+				onChatMessage: handleChatMessage,
+				onChatReady: (ready) => (isChatReady = ready)
 			},
 			false
 		);
@@ -185,12 +192,11 @@
 	}
 
 	function sendChat() {
-		if (!chatInput.trim() || currentState !== 'CONNECTED') return;
+		if (!chatInput.trim() || !isChatReady) return;
 
 		const text = chatInput.trim();
-		// Send via WebSocket relay (as per plan/backend)
-		if (peer?.sdpExchange?.readyState === WebSocket.OPEN) {
-			peer.sdpExchange.send(JSON.stringify({ name: 'CHAT', data: text }));
+		// Send peer-to-peer over the WebRTC data channel.
+		if (peer?.sendChatMessage(text)) {
 			addMessage(text, 'local');
 			chatInput = '';
 		}
@@ -375,15 +381,15 @@
 				<input
 					type="text"
 					bind:value={chatInput}
-					disabled={currentState !== 'CONNECTED'}
-					placeholder={currentState === 'CONNECTED' ? 'Type a message...' : 'Connect to chat...'}
+					disabled={!isChatReady}
+					placeholder={isChatReady ? 'Type a message...' : 'Connect to chat...'}
 					class="flex-1 rounded-full border border-gray-700 bg-gray-800 px-4 py-2.5 text-white placeholder-gray-500 transition focus:outline-none focus:ring-2 focus:ring-yellow-400/50 disabled:cursor-not-allowed disabled:opacity-50"
 				/>
 				<!-- svelte-ignore a11y_consider_explicit_label -->
 				<button
 					type="submit"
 					class="rounded-full bg-yellow-400 p-2.5 text-black transition-transform hover:bg-yellow-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-					disabled={!chatInput.trim() || currentState !== 'CONNECTED'}
+					disabled={!chatInput.trim() || !isChatReady}
 				>
 					<svg
 						xmlns="http://www.w3.org/2000/svg"

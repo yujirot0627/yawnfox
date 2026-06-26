@@ -72,8 +72,10 @@ export class PeerConnection {
 				console.log('Stranger left.');
 				this.disconnect('REMOTE');
 			}
-			if (message.name === 'CHAT') {
-				this.options?.onChatMessage?.(message.data);
+			if (message.name === 'RATE_LIMITED' || message.name === 'SERVER_UNAVAILABLE') {
+				console.warn(message.name, message.message);
+				alert(message.message || 'Server is busy. Please try again shortly.');
+				this.setState('NOT_CONNECTED');
 			}
 		});
 
@@ -146,6 +148,12 @@ export class PeerConnection {
 	}
 
 	setupDataChannel(channel) {
+		// Chat input is enabled only once the channel is open (P2P ready).
+		channel.onopen = () => {
+			console.log('📡 Data channel open');
+			this.options?.onChatReady?.(true);
+		};
+
 		channel.onmessage = (event) => {
 			console.log('📨 DC message:', event.data);
 
@@ -159,8 +167,8 @@ export class PeerConnection {
 				const parsed = JSON.parse(event.data);
 				if (parsed.type === 'CAM_STATE') {
 					this.options?.onRemoteCamState?.(parsed.enabled);
-				} else if (parsed.chat) {
-					this.options?.onChatMessage?.(parsed.chat);
+				} else if (parsed.type === 'chat') {
+					this.options?.onChatMessage?.(parsed.text);
 				}
 			} catch (err) {
 				console.warn('⚠️ Could not parse data channel message:', err);
@@ -169,6 +177,7 @@ export class PeerConnection {
 
 		channel.onclose = () => {
 			console.log('📴 Data channel closed');
+			this.options?.onChatReady?.(false);
 			if (!this.closedByLocal) {
 				this.disconnect('REMOTE');
 			} else {
@@ -189,6 +198,16 @@ export class PeerConnection {
 		}
 		this.closedByLocal = true;
 		this.disconnect('LOCAL');
+	}
+
+	// Send a chat message peer-to-peer over the WebRTC data channel.
+	sendChatMessage(text) {
+		if (this.dataChannel && this.dataChannel.readyState === 'open') {
+			this.dataChannel.send(JSON.stringify({ type: 'chat', text }));
+			return true;
+		}
+		console.log('❗ Data channel not open. Cannot send chat.');
+		return false;
 	}
 
 	disconnect(originator) {
@@ -247,7 +266,8 @@ export class PeerConnection {
 			const rawChannel = this.peerConnection.createDataChannel('data-channel');
 			this.dataChannel = this.setupDataChannel(rawChannel);
 
-			rawChannel.onopen = () => {
+			// Additional open listener (setupDataChannel already signals chat-ready).
+			rawChannel.addEventListener('open', () => {
 				console.log('📡 Data channel open, sending CAM_STATE');
 				rawChannel.send(
 					JSON.stringify({
@@ -255,7 +275,7 @@ export class PeerConnection {
 						enabled: this.localStream?.getVideoTracks?.()[0]?.enabled ?? true
 					})
 				);
-			};
+			});
 
 			// ensure senders are fresh, then add tracks
 			const senders = this.peerConnection.getSenders();

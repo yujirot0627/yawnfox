@@ -247,13 +247,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 await store.remove_waiting(ws_id)
                 await soft_unpair(ws_id)
 
-            elif msg_name == "CHAT":
-                # CHAT is fire-and-forget
-                partner_id = await store.get_partner(ws_id)
-                if partner_id:
-                    asyncio.create_task(store.route(partner_id, data))
-
             # Generic signaling relay (SDP, ICE candidates, etc.)
+            # NOTE: chat is now peer-to-peer over the WebRTC data channel and no
+            # longer passes through this server.
             # Order matters -> await send
             else:
                 partner_id = await store.get_partner(ws_id)
