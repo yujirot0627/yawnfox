@@ -253,7 +253,7 @@
 						class="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm"
 					>
 						{#if currentState === 'NOT_CONNECTED'}
-							<img src="/icon.png" alt="Waiting" class="mb-4 h-16 w-16 animate-pulse opacity-80" />
+							<img src="/icon.png" alt="Waiting" width="64" height="64" class="mb-4 h-16 w-16 animate-pulse opacity-80" />
 							<p class="text-xl font-medium tracking-wide">Ready to Chat?</p>
 						{:else if currentState === 'CONNECTING'}
 							<div

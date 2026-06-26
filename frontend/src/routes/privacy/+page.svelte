@@ -4,8 +4,11 @@
 
 <svelte:head>
 	<title>Privacy Policy - Yawnfox</title>
-	<meta name="description" content="Yawnfox Privacy Policy. We do not store personal data, record calls, or track user activity. Read how we protect your anonymity." />
+	<meta name="description" content="Yawnfox Privacy Policy. Learn how we protect your anonymity on our random video chat platform." />
 	<link rel="canonical" href="https://yawnfox.com/privacy" />
+	<meta property="og:title" content="Privacy Policy - Yawnfox" />
+	<meta property="og:description" content="Yawnfox Privacy Policy. Learn how we protect your anonymity on our random video chat platform." />
+	<meta property="og:url" content="https://yawnfox.com/privacy" />
 </svelte:head>
 
 <div class="min-h-screen bg-gray-900 text-gray-300 font-sans selection:bg-yellow-400 selection:text-black">

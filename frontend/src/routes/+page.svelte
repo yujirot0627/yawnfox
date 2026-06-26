@@ -23,14 +23,14 @@
 </script>
 
 <svelte:head>
-	<title>Yawnfox - Anonymous Video Chat</title>
-	<meta name="description" content="Instant topic-based video chat with strangers. No login required, anonymous by default. Match based on shared interests or go random." />
+	<title>Yawnfox - Free Random Video Chat | Omegle Alternative</title>
+	<meta name="description" content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat." />
 	<link rel="canonical" href="https://yawnfox.com/" />
-	<meta property="og:title" content="Yawnfox - Anonymous Video Chat" />
-	<meta property="og:description" content="Chat with strangers instantly via video. Add topics to find matches or go random." />
-	<meta property="og:url" content="https://yawnfox.com/" />
-	<meta property="og:type" content="website" />
-	<meta name="twitter:card" content="summary_large_image" />
+	<meta property="og:title" content="Yawnfox - Free Random Video Chat | Omegle Alternative" />
+	<meta property="og:description" content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat." />
+	<meta property="og:url" content="https://yawnfox.com" />
+	<meta name="twitter:title" content="Yawnfox - Free Random Video Chat | Omegle Alternative" />
+	<meta name="twitter:description" content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat." />
 	<script type="application/ld+json">
 		{
 			"@context": "https://schema.org",
@@ -51,7 +51,7 @@
 		<div
 			class="flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/10 shadow-sm"
 		>
-			<img src="/icon.png" alt="Yawnfox" class="h-9 w-9 rounded-full opacity-95" />
+			<img src="/icon.png" alt="Yawnfox" width="36" height="36" class="h-9 w-9 rounded-full opacity-95" />
 		</div>
 		<!-- Menu (Optional placeholder) -->
 		<!-- <button class="text-gray-400 hover:text-white">Menu</button> -->
@@ -64,7 +64,9 @@
 		<!-- Background Image -->
 		<img
 			src="/Yawn_BG.png"
-			alt="Background"
+			alt=""
+			width="1366"
+			height="768"
 			class="absolute inset-0 z-0 h-full w-full object-cover object-center"
 		/>
 

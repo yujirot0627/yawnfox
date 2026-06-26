@@ -4,8 +4,11 @@
 
 <svelte:head>
 	<title>Terms of Service - Yawnfox</title>
-	<meta name="description" content="Read the Terms of Service for Yawnfox. Understand the rules for using our anonymous video chat platform safely." />
+	<meta name="description" content="Yawnfox Terms of Service. Read our terms for using the random video chat platform." />
 	<link rel="canonical" href="https://yawnfox.com/tos" />
+	<meta property="og:title" content="Terms of Service - Yawnfox" />
+	<meta property="og:description" content="Yawnfox Terms of Service. Read our terms for using the random video chat platform." />
+	<meta property="og:url" content="https://yawnfox.com/tos" />
 </svelte:head>
 
 <div class="min-h-screen bg-gray-900 text-gray-300 font-sans selection:bg-yellow-400 selection:text-black">

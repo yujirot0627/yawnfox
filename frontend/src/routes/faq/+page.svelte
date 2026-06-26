@@ -3,9 +3,14 @@
 </script>
 
 <svelte:head>
-	<title>FAQ - Yawnfox</title>
-	<meta name="description" content="Frequently asked questions about Yawnfox. Learn about anonymous video chat, safety, topic matching, and troubleshooting." />
+	<title>FAQ - Yawnfox Random Video Chat</title>
+	<meta name="description" content="Frequently asked questions about Yawnfox. Learn how anonymous video chat, topic matching, and privacy work on Yawnfox." />
 	<link rel="canonical" href="https://yawnfox.com/faq" />
+	<meta property="og:title" content="FAQ - Yawnfox Random Video Chat" />
+	<meta property="og:description" content="Frequently asked questions about Yawnfox. Learn how anonymous video chat, topic matching, and privacy work on Yawnfox." />
+	<meta property="og:url" content="https://yawnfox.com/faq" />
+	<meta name="twitter:title" content="FAQ - Yawnfox Random Video Chat" />
+	<meta name="twitter:description" content="Frequently asked questions about Yawnfox. Learn how anonymous video chat, topic matching, and privacy work on Yawnfox." />
 	<script type="application/ld+json">
 		{
 			"@context": "https://schema.org",
@@ -13,26 +18,42 @@
 			"mainEntity": [
 				{
 					"@type": "Question",
-					"name": "Is Yawnfox anonymous?",
+					"name": "Is Yawnfox really anonymous?",
 					"acceptedAnswer": {
 						"@type": "Answer",
-						"text": "Yes. We do not require registration, and we do not store personal information like names or emails."
+						"text": "Yes. Yawnfox is designed to be usable without an account. We don't ask for your name, email, or phone number. Interactions happen directly between users."
 					}
 				},
 				{
 					"@type": "Question",
-					"name": "Are topics required?",
+					"name": "How does topic matching work?",
 					"acceptedAnswer": {
 						"@type": "Answer",
-						"text": "No. You can add topics to match with people sharing similar interests, or skip them to match randomly."
+						"text": "It's simple: if you enter a topic (like \"anime\" or \"coding\") and someone else enters the same (or similar) topic, our system prioritizes connecting you two. If no match is found, you connect with a random stranger."
 					}
 				},
 				{
 					"@type": "Question",
-					"name": "Do you record chats?",
+					"name": "How do I hide messages?",
 					"acceptedAnswer": {
 						"@type": "Answer",
-						"text": "No. Yawnfox facilitates peer-to-peer connections. We do not record or store user video streams."
+						"text": "Tap the chat icon in the control bar to toggle the message overlay on or off."
+					}
+				},
+				{
+					"@type": "Question",
+					"name": "Nothing happens when I click Start?",
+					"acceptedAnswer": {
+						"@type": "Answer",
+						"text": "Make sure you have allowed Camera and Microphone permissions in your browser. Yawnfox needs these to establish a video call."
+					}
+				},
+				{
+					"@type": "Question",
+					"name": "How do I report someone?",
+					"acceptedAnswer": {
+						"@type": "Answer",
+						"text": "If a user violates our terms (nudity, harassment), please leave the chat immediately. We are working on a more robust reporting system for future updates."
 					}
 				}
 			]
