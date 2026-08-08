@@ -150,14 +150,25 @@ export class PeerConnection {
 	setupDataChannel(channel) {
 		// Chat input is enabled only once the channel is open (P2P ready).
 		channel.onopen = () => {
-			console.log('📡 Data channel open');
+			console.log('📡 Data channel open, sending CAM_STATE');
 			this.options?.onChatReady?.(true);
+
+			// Announce our starting camera state. This lives here, rather than on the
+			// offerer's channel, because both peers route through setupDataChannel —
+			// the offerer via createDataChannel and the answerer via ondatachannel.
+			// Only the offerer used to send it, so a peer that muted its camera before
+			// pairing was seen as camera-on by the other side.
+			channel.send(
+				JSON.stringify({
+					type: 'CAM_STATE',
+					enabled: this.localStream?.getVideoTracks?.()[0]?.enabled ?? true
+				})
+			);
 		};
 
 		channel.onmessage = (event) => {
-			console.log('📨 DC message:', event.data);
-
 			if (event.data === 'BYE') {
+				console.log('📨 DC message:', event.data);
 				console.log('Received BYE, closing connection');
 				this.disconnect('REMOTE');
 				return;
@@ -165,10 +176,18 @@ export class PeerConnection {
 
 			try {
 				const parsed = JSON.parse(event.data);
+
+				// Ball state (30Hz) and paddles (20Hz) would flood the console; log everything else.
+				if (parsed.type !== 'game_state' && parsed.type !== 'game_paddle') {
+					console.log('📨 DC message:', event.data);
+				}
+
 				if (parsed.type === 'CAM_STATE') {
 					this.options?.onRemoteCamState?.(parsed.enabled);
 				} else if (parsed.type === 'chat') {
 					this.options?.onChatMessage?.(parsed.text);
+				} else if (parsed.type?.startsWith('game_')) {
+					this.options?.onGameMessage?.(parsed);
 				}
 			} catch (err) {
 				console.warn('⚠️ Could not parse data channel message:', err);
@@ -200,14 +219,20 @@ export class PeerConnection {
 		this.disconnect('LOCAL');
 	}
 
-	// Send a chat message peer-to-peer over the WebRTC data channel.
-	sendChatMessage(text) {
-		if (this.dataChannel && this.dataChannel.readyState === 'open') {
-			this.dataChannel.send(JSON.stringify({ type: 'chat', text }));
+	// Send any JSON payload peer-to-peer over the WebRTC data channel.
+	send(obj) {
+		if (this.dataChannel?.readyState === 'open') {
+			this.dataChannel.send(JSON.stringify(obj));
 			return true;
 		}
-		console.log('❗ Data channel not open. Cannot send chat.');
 		return false;
+	}
+
+	// Send a chat message peer-to-peer over the WebRTC data channel.
+	sendChatMessage(text) {
+		const sent = this.send({ type: 'chat', text });
+		if (!sent) console.log('❗ Data channel not open. Cannot send chat.');
+		return sent;
 	}
 
 	disconnect(originator) {
@@ -256,6 +281,9 @@ export class PeerConnection {
 	}
 
 	handlePartnerFound(instructions) {
+		// Also used by the mini game to break a tie when both peers invite at once.
+		this.isOfferer = instructions === 'GO_FIRST';
+
 		if (instructions !== 'GO_FIRST') {
 			return console.log('Partner found, waiting for SDP offer ...');
 		}
@@ -265,17 +293,7 @@ export class PeerConnection {
 		this.tryHandle('PARTNER_FOUND', async () => {
 			const rawChannel = this.peerConnection.createDataChannel('data-channel');
 			this.dataChannel = this.setupDataChannel(rawChannel);
-
-			// Additional open listener (setupDataChannel already signals chat-ready).
-			rawChannel.addEventListener('open', () => {
-				console.log('📡 Data channel open, sending CAM_STATE');
-				rawChannel.send(
-					JSON.stringify({
-						type: 'CAM_STATE',
-						enabled: this.localStream?.getVideoTracks?.()[0]?.enabled ?? true
-					})
-				);
-			});
+			// setupDataChannel's onopen announces CAM_STATE for both peers.
 
 			// ensure senders are fresh, then add tracks
 			const senders = this.peerConnection.getSenders();
