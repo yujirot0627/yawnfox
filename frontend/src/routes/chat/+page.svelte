@@ -1,7 +1,17 @@
 <script>
 	import { onMount, tick } from 'svelte';
 	import { setupPeerConnection } from '$lib/peer.js';
-	import { Video, VideoOff, MessageCircle, Settings, X, TriangleAlert } from 'lucide-svelte';
+	import Game from '$lib/Game.svelte';
+	import {
+		Video,
+		VideoOff,
+		MessageCircle,
+		Settings,
+		X,
+		TriangleAlert,
+		Gamepad2,
+		Grid3x3
+	} from 'lucide-svelte';
 
 	let peer;
 	let currentState = 'NOT_CONNECTED';
@@ -16,6 +26,11 @@
 
 	let localVideo;
 	let remoteVideo;
+	let gameRef;
+	// While a game runs the layout is forced to 50/50 with your own camera on the
+	// left, matching the side your paddle is drawn on. layoutMode is only
+	// overridden, never written to, so the user's choice returns on its own.
+	let gameActive = false;
 
 	// New State
 	let topics = []; // Array of strings
@@ -29,7 +44,10 @@
 
 		// Chat is gated on the data channel being open (peer.js drives it true on
 		// open); reset on any non-connected transition.
-		if (state !== 'CONNECTED') isChatReady = false;
+		if (state !== 'CONNECTED') {
+			isChatReady = false;
+			gameRef?.reset(); // never leave a game running once the peer is gone
+		}
 
 		if (state === 'CONNECTING') {
 			statusMessage = 'Looking for strangers...';
@@ -110,10 +128,10 @@
 		}
 	}
 
-	onMount(async () => {
-		window.setAppState = setState;
-
-		peer = await setupPeerConnection({
+	// Single source of truth for the peer callbacks — both setup paths use it, so a
+	// new callback can't be wired into only one of them.
+	function peerOptions() {
+		return {
 			onLocalMedia: (stream) => (localVideo.srcObject = stream),
 			onRemoteMedia: (stream) => (remoteVideo.srcObject = stream),
 			onStateChange: setState,
@@ -121,8 +139,15 @@
 				isRemoteCamOn = enabled;
 			},
 			onChatMessage: handleChatMessage,
-			onChatReady: (ready) => (isChatReady = ready)
-		});
+			onChatReady: (ready) => (isChatReady = ready),
+			onGameMessage: (msg) => gameRef?.handleMessage(msg)
+		};
+	}
+
+	onMount(async () => {
+		window.setAppState = setState;
+
+		peer = await setupPeerConnection(peerOptions());
 
 		isRemoteCamOn = true;
 
@@ -133,19 +158,7 @@
 	});
 
 	async function createPeer() {
-		peer = await setupPeerConnection(
-			{
-				onLocalMedia: (stream) => (localVideo.srcObject = stream),
-				onRemoteMedia: (stream) => (remoteVideo.srcObject = stream),
-				onStateChange: setState,
-				onRemoteCamState: (enabled) => {
-					isRemoteCamOn = enabled;
-				},
-				onChatMessage: handleChatMessage,
-				onChatReady: (ready) => (isChatReady = ready)
-			},
-			false
-		);
+		peer = await setupPeerConnection(peerOptions(), false);
 
 		await waitForWebSocketOpen(peer.sdpExchange);
 
@@ -231,11 +244,17 @@
 		<!-- Main View (Remote or Split) -->
 		<div
 			class={`relative h-full w-full transition-all duration-300
-			${layoutMode === 'split' ? 'flex flex-col md:flex-row' : ''}`}
+			${gameActive ? 'flex flex-row' : layoutMode === 'split' ? 'flex flex-col md:flex-row' : ''}`}
 		>
 			<!-- Remote / Main Video -->
 			<div
-				class={`relative overflow-hidden bg-black ${layoutMode === 'split' ? 'h-1/2 md:h-full md:w-1/2' : 'h-full w-full'}`}
+				class={`relative overflow-hidden bg-black ${
+					gameActive
+						? 'h-full w-1/2'
+						: layoutMode === 'split'
+							? 'h-1/2 md:h-full md:w-1/2'
+							: 'h-full w-full'
+				}`}
 			>
 				<!-- svelte-ignore a11y_media_has_caption -->
 				<!-- svelte-ignore element_invalid_self_closing_tag -->
@@ -253,7 +272,13 @@
 						class="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm"
 					>
 						{#if currentState === 'NOT_CONNECTED'}
-							<img src="/icon.png" alt="Waiting" width="64" height="64" class="mb-4 h-16 w-16 animate-pulse opacity-80" />
+							<img
+								src="/icon.png"
+								alt="Waiting"
+								width="64"
+								height="64"
+								class="mb-4 h-16 w-16 animate-pulse opacity-80"
+							/>
 							<p class="text-xl font-medium tracking-wide">Ready to Chat?</p>
 						{:else if currentState === 'CONNECTING'}
 							<div
@@ -297,7 +322,7 @@
 						{#each messages as msg (msg.id)}
 							<div class="animate-in fade-in slide-in-from-bottom-2 duration-300">
 								<span
-									class={`text-shadow-sm max-w-full break-words rounded-lg px-3 py-1.5 text-[15px] font-medium leading-relaxed
+									class={`max-w-full rounded-lg px-3 py-1.5 text-[15px] leading-relaxed font-medium break-words text-shadow-sm
 									${
 										msg.sender === 'local'
 											? 'bg-black/40 text-white'
@@ -311,7 +336,7 @@
 									{:else if msg.sender === 'remote'}
 										<span class="mr-1 opacity-75">Stranger:</span>
 									{:else if msg.sender === 'system'}
-										<span class="mr-1 text-xs uppercase tracking-wider text-cyan-200 opacity-75"
+										<span class="mr-1 text-xs tracking-wider text-cyan-200 uppercase opacity-75"
 											>System:</span
 										>
 									{/if}
@@ -328,9 +353,11 @@
 			<div
 				class={`z-30 overflow-hidden bg-gray-800 transition-all duration-300
 				${
-					layoutMode === 'split'
-						? 'relative h-1/2 border-t border-gray-700 md:h-full md:w-1/2 md:border-l md:border-t-0'
-						: 'absolute bottom-4 right-4 h-32 w-24 rounded-xl border-2 border-white/20 shadow-2xl sm:h-48 sm:w-36'
+					gameActive
+						? 'relative order-first h-full w-1/2 border-r border-gray-700'
+						: layoutMode === 'split'
+							? 'relative h-1/2 border-t border-gray-700 md:h-full md:w-1/2 md:border-t-0 md:border-l'
+							: 'absolute right-4 bottom-4 h-32 w-24 rounded-xl border-2 border-white/20 shadow-2xl sm:h-48 sm:w-36'
 				}`}
 			>
 				<video
@@ -348,6 +375,17 @@
 				{/if}
 			</div>
 		</div>
+
+		<!-- Mini game overlay (canvas + invite/countdown/score UI) -->
+		<Game
+			bind:this={gameRef}
+			{peer}
+			{localVideo}
+			{isCamOn}
+			{isRemoteCamOn}
+			on:system={(e) => addMessage(e.detail, 'system')}
+			on:active={(e) => (gameActive = e.detail)}
+		/>
 	</div>
 
 	<!-- Bottom Controls Area -->
@@ -356,7 +394,7 @@
 			<!-- Topic Chips & Input (Top Row) -->
 			<!-- Fixed height container with horizontal scroll to prevent layout shift -->
 			<div
-				class="no-scrollbar flex h-10 items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap px-1"
+				class="no-scrollbar flex h-10 items-center gap-2 overflow-x-auto overflow-y-hidden px-1 whitespace-nowrap"
 			>
 				{#each topics as t, i}
 					<div
@@ -375,7 +413,7 @@
 						bind:value={topicInput}
 						on:keydown={handleTopicKeydown}
 						placeholder={topics.length === 0 ? 'Add topics...' : 'Add...'}
-						class="min-w-[120px] max-w-[200px] flex-none border-b-2 border-gray-600 bg-transparent pb-0.5 text-sm text-white placeholder-gray-500 transition-colors focus:border-yellow-400 focus:outline-none"
+						class="max-w-[200px] min-w-[120px] flex-none border-b-2 border-gray-600 bg-transparent pb-0.5 text-sm text-white placeholder-gray-500 transition-colors focus:border-yellow-400 focus:outline-none"
 					/>
 				{/if}
 			</div>
@@ -387,7 +425,7 @@
 					bind:value={chatInput}
 					disabled={!isChatReady}
 					placeholder={isChatReady ? 'Type a message...' : 'Connect to chat...'}
-					class="flex-1 rounded-full border border-gray-700 bg-gray-800 px-4 py-2.5 text-white placeholder-gray-500 transition focus:outline-none focus:ring-2 focus:ring-yellow-400/50 disabled:cursor-not-allowed disabled:opacity-50"
+					class="flex-1 rounded-full border border-gray-700 bg-gray-800 px-4 py-2.5 text-white placeholder-gray-500 transition focus:ring-2 focus:ring-yellow-400/50 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
 				/>
 				<!-- svelte-ignore a11y_consider_explicit_label -->
 				<button
@@ -409,7 +447,8 @@
 			</form>
 
 			<!-- Buttons Row (Bottom Row) -->
-			<div class="flex items-center justify-center gap-4">
+			<!-- wraps because two game buttons + Next + toggles overflow narrow screens -->
+			<div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
 				{#if ['NOT_CONNECTED', 'DISCONNECTED_LOCAL', 'DISCONNECTED_REMOTE'].includes(currentState)}
 					<button
 						class="h-10 rounded-full bg-yellow-400 px-6 text-base font-bold text-black shadow-lg shadow-yellow-400/20 transition-all hover:scale-105 hover:bg-yellow-300"
@@ -430,6 +469,26 @@
 						on:click={leavePairing}
 					>
 						Next
+					</button>
+
+					<button
+						class="flex h-10 items-center gap-2 rounded-full bg-gray-700 px-4 font-bold text-white transition-all hover:scale-105 hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
+						on:click={() => gameRef?.invite('hockey')}
+						disabled={!isChatReady}
+						title="Play Nose Hockey — steer a paddle with your nose (camera required)"
+					>
+						<Gamepad2 class="h-5 w-5" />
+						Nose Hockey
+					</button>
+
+					<button
+						class="flex h-10 items-center gap-2 rounded-full bg-gray-700 px-4 font-bold text-white transition-all hover:scale-105 hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
+						on:click={() => gameRef?.invite('ttt')}
+						disabled={!isChatReady}
+						title="Play X / O — no camera needed"
+					>
+						<Grid3x3 class="h-5 w-5" />
+						X / O
 					</button>
 				{/if}
 
@@ -484,7 +543,13 @@
 					</button>
 				</div>
 
-				<div class="space-y-4">
+				<div class="space-y-4" class:opacity-50={gameActive}>
+					{#if gameActive}
+						<p class="text-sm text-gray-400">
+							Locked to 50:50 while the game is running. Your pick returns when it ends.
+						</p>
+					{/if}
+
 					<label
 						class="hover:bg-gray-750 flex cursor-pointer items-center justify-between rounded-xl border border-transparent bg-gray-800 p-3 transition hover:border-gray-700"
 					>
@@ -493,6 +558,7 @@
 							type="radio"
 							bind:group={layoutMode}
 							value="facetime"
+							disabled={gameActive}
 							class="h-5 w-5 border-gray-600 bg-gray-700 text-yellow-400 focus:ring-yellow-400"
 						/>
 					</label>
@@ -505,6 +571,7 @@
 							type="radio"
 							bind:group={layoutMode}
 							value="split"
+							disabled={gameActive}
 							class="h-5 w-5 border-gray-600 bg-gray-700 text-yellow-400 focus:ring-yellow-400"
 						/>
 					</label>
