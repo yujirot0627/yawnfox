@@ -1,2 +1,13 @@
 fly.toml
+
+# Local virtualenvs. The image installs its own deps from requirements.txt, and
+# a host venv would also carry macOS-built binaries that cannot run in the
+# linux container. Both names are covered since either may be used locally.
 .venv
+venv/
+
+# Keep local secrets out of the image. The Dockerfile does `COPY . .`, so
+# without this a local .env would be baked into the Fly image and load_dotenv()
+# would pick it up in production. Fly config comes from `fly secrets set`.
+.env
+.env.*

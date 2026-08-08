@@ -91,9 +91,8 @@ All backend configuration is via environment variables — see
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `UPSTASH_REDIS_URL` | yes | Full `rediss://default:<password>@<host>:6379` URL from the Upstash console, **or** a bare host (combined with `UPSTASH_REDIS_TOKEN`). |
-| `UPSTASH_REDIS_TOKEN` | no | Redis password, used only when `UPSTASH_REDIS_URL` is a bare host. |
-| `REDIS_URL` | no | Local dev fallback (e.g. `redis://localhost:6379`), used only if `UPSTASH_REDIS_URL` is empty. |
+| `REDIS_URL` | no | Full `redis://` / `rediss://` URL (e.g. the Upstash console URL, or `redis://localhost:6379` locally), **or** a bare host combined with `UPSTASH_REDIS_TOKEN`. Leave empty to run single-instance in in-memory mode. |
+| `UPSTASH_REDIS_TOKEN` | no | Redis password, used only when `REDIS_URL` is a bare host. |
 | `CORS_ORIGIN` | recommended | Comma-separated allowed browser origins for the WebSocket + `/ping`. Empty = allow all (dev only). |
 | `RATE_LIMIT_MAX` | no | Max new WS connections per IP per window (default `5`). |
 | `RATE_LIMIT_WINDOW` | no | Sliding-window length in seconds (default `60`). |
@@ -116,7 +115,7 @@ All backend configuration is via environment variables — see
 cd backend
 
 # Redis (paste the full rediss:// URL — it already contains the password)
-fly secrets set UPSTASH_REDIS_URL="rediss://default:YOUR_PASSWORD@your-db.upstash.io:6379"
+fly secrets set REDIS_URL="rediss://default:YOUR_PASSWORD@your-db.upstash.io:6379"
 
 # Lock the signaling WebSocket + /ping to your frontend origin
 fly secrets set CORS_ORIGIN="https://yawnfox.com"
@@ -138,7 +137,8 @@ cd backend
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# point at a local redis (or set UPSTASH_REDIS_URL)
+# Optional: point at a local redis for multi-instance mode.
+# Leave REDIS_URL unset to run in in-memory mode with no Redis at all.
 redis-server --daemonize yes
 export REDIS_URL="redis://localhost:6379"
 

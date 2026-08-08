@@ -1,4 +1,14 @@
 # app/main.py
+
+# Must run before any other import: store.py resolves its configuration into
+# module-level constants at import time (CONN_TTL, RATE_LIMIT_MAX, _inmemory_mode,
+# ...), so loading the .env after `import store` would be too late for those.
+# With no .env present this is a no-op — which is the case on Fly.io, where the
+# values come from `fly secrets set`. See .env.example.
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import os
 import json
 import uuid
@@ -205,6 +215,9 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1013)  # 1013 = Try Again Later
         return
 
+    # In in-memory mode (REDIS_URL not set), is_ready() always returns
+    # True and this block is never reached. It only fires when Redis is
+    # configured but the connection was lost at startup.
     if not store.is_ready():
         try:
             await websocket.send_text(json.dumps({

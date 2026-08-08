@@ -9,9 +9,14 @@ The only per-process state is the live WebSocket objects themselves (they cannot
 be serialized). Any instance can still deliver a message to any client through
 Redis pub/sub: see `route()` and `pubsub_listener()`.
 
-Connection:
+In-memory mode (REDIS_URL not set):
+    All state is kept in plain Python dicts within this process. No Redis
+    connection is attempted and no error is logged. Single-instance only;
+    suitable for local development and zero-config deployments.
+
+Connection (Redis mode):
     Uses redis-py over a TLS (rediss://) connection so that pub/sub works.
-    Configure with UPSTASH_REDIS_URL (+ optional UPSTASH_REDIS_TOKEN); see
+    Configure with REDIS_URL (+ optional UPSTASH_REDIS_TOKEN); see
     `_build_url()` and backend/.env.example.
 """
 import os
@@ -70,6 +75,17 @@ _pubsub = None
 _instance_id: str = os.environ.get("FLY_MACHINE_ID") or uuid.uuid4().hex
 _local_delivery: Optional[Callable[[str, str], Awaitable[bool]]] = None
 _on_wakeup: Optional[Callable[[], None]] = None
+
+# In-memory mode: active when REDIS_URL is not configured.
+# Redis code is kept intact for future horizontal scaling.
+_inmemory_mode: bool = not bool((os.environ.get("REDIS_URL") or "").strip())
+
+# In-memory state (used only when _inmemory_mode is True)
+_mem_waiting: dict = {}        # ws_id -> enqueue_ms
+_mem_partners: dict = {}       # ws_id -> partner_ws_id (stored both directions)
+_mem_topics: dict = {}         # ws_id -> set[str]
+_mem_connections: set = set()  # registered ws_ids
+_mem_matcher_locked: bool = False
 
 
 # --- Lua scripts (run atomically inside Redis) ---
@@ -140,12 +156,11 @@ def set_wakeup_callback(cb: Callable[[], None]) -> None:
 def _build_url() -> str:
     """Resolve the Redis connection URL from the environment.
 
-    Accepts either a full redis:// / rediss:// URL in UPSTASH_REDIS_URL, or a
-    bare host in UPSTASH_REDIS_URL combined with UPSTASH_REDIS_TOKEN as the
-    password (assembled into a TLS rediss:// URL on port 6379). Falls back to
-    REDIS_URL (or localhost) for local development.
+    Accepts either a full redis:// / rediss:// URL in REDIS_URL, or a bare host
+    in REDIS_URL combined with UPSTASH_REDIS_TOKEN as the password (assembled
+    into a TLS rediss:// URL on port 6379).
     """
-    url = (os.environ.get("UPSTASH_REDIS_URL") or "").strip()
+    url = (os.environ.get("REDIS_URL") or "").strip()
     token = (os.environ.get("UPSTASH_REDIS_TOKEN") or "").strip()
     if url:
         if url.startswith("redis://") or url.startswith("rediss://"):
@@ -154,12 +169,21 @@ def _build_url() -> str:
         if token:
             return f"rediss://default:{token}@{host}:6379"
         return f"rediss://{host}:6379"
-    return (os.environ.get("REDIS_URL") or "redis://localhost:6379").strip()
+    # Not reachable in practice: an empty REDIS_URL selects in-memory mode, so
+    # connect() returns before it ever calls this. Kept as a safe default.
+    return "redis://localhost:6379"
 
 
 async def connect() -> bool:
-    """Open the Redis connection. Returns True on success (never raises)."""
+    """Open the Redis connection. Returns True on success (never raises).
+
+    When REDIS_URL is not set, skips Redis entirely and runs in
+    in-memory mode; always returns True without logging any error.
+    """
     global _redis
+    if _inmemory_mode:
+        logger.info(f"REDIS_URL not set — in-memory mode (instance {_instance_id})")
+        return True
     url = _build_url()
     try:
         _redis = redis.from_url(
@@ -180,11 +204,14 @@ async def connect() -> bool:
 
 
 def is_ready() -> bool:
-    return _redis is not None
+    # In-memory mode is always ready; Redis mode requires an active connection.
+    return _inmemory_mode or _redis is not None
 
 
 async def close() -> None:
     global _redis, _pubsub
+    if _inmemory_mode:
+        return
     for obj in (_pubsub, _redis):
         if obj is None:
             continue
@@ -204,6 +231,9 @@ async def close() -> None:
 # --- Presence -------------------------------------------------------------
 
 async def register_connection(ws_id: str) -> None:
+    if _inmemory_mode:
+        _mem_connections.add(ws_id)
+        return
     if not _redis:
         return
     try:
@@ -213,6 +243,9 @@ async def register_connection(ws_id: str) -> None:
 
 
 async def unregister_connection(ws_id: str) -> None:
+    if _inmemory_mode:
+        _mem_connections.discard(ws_id)
+        return
     if not _redis:
         return
     try:
@@ -222,6 +255,8 @@ async def unregister_connection(ws_id: str) -> None:
 
 
 async def is_connected(ws_id: str) -> bool:
+    if _inmemory_mode:
+        return ws_id in _mem_connections
     if not _redis:
         return False
     try:
@@ -232,6 +267,8 @@ async def is_connected(ws_id: str) -> bool:
 
 async def refresh(ws_ids: Iterable[str]) -> None:
     """Heartbeat: extend TTLs for this instance's live clients."""
+    if _inmemory_mode:
+        return  # no TTLs to refresh in in-memory mode
     if not _redis:
         return
     ids = list(ws_ids)
@@ -251,6 +288,10 @@ async def refresh(ws_ids: Iterable[str]) -> None:
 # --- Waiting pool ---------------------------------------------------------
 
 async def enqueue_waiting(ws_id: str, topics: Iterable[str]) -> None:
+    if _inmemory_mode:
+        _mem_waiting[ws_id] = int(time.time() * 1000)
+        _mem_topics[ws_id] = {t for t in topics if t}
+        return
     if not _redis:
         return
     now_ms = int(time.time() * 1000)
@@ -268,6 +309,10 @@ async def enqueue_waiting(ws_id: str, topics: Iterable[str]) -> None:
 
 
 async def remove_waiting(ws_id: str) -> None:
+    if _inmemory_mode:
+        _mem_waiting.pop(ws_id, None)
+        _mem_topics.pop(ws_id, None)
+        return
     if not _redis:
         return
     try:
@@ -280,6 +325,8 @@ async def remove_waiting(ws_id: str) -> None:
 
 
 async def waiting_count() -> int:
+    if _inmemory_mode:
+        return len(_mem_waiting)
     if not _redis:
         return 0
     try:
@@ -291,6 +338,10 @@ async def waiting_count() -> int:
 # --- Partner mapping ------------------------------------------------------
 
 async def set_partners(a: str, b: str) -> None:
+    if _inmemory_mode:
+        _mem_partners[a] = b
+        _mem_partners[b] = a
+        return
     if not _redis:
         return
     try:
@@ -303,6 +354,8 @@ async def set_partners(a: str, b: str) -> None:
 
 
 async def get_partner(ws_id: str) -> Optional[str]:
+    if _inmemory_mode:
+        return _mem_partners.get(ws_id)
     if not _redis:
         return None
     try:
@@ -313,6 +366,11 @@ async def get_partner(ws_id: str) -> Optional[str]:
 
 async def clear_partner(ws_id: str) -> Optional[str]:
     """Unpair ws_id (both directions) atomically. Returns the former partner id."""
+    if _inmemory_mode:
+        partner = _mem_partners.pop(ws_id, None)
+        if partner:
+            _mem_partners.pop(partner, None)
+        return partner
     if not _redis:
         return None
     try:
@@ -359,6 +417,13 @@ async def trigger_wakeup() -> None:
 
 
 async def try_acquire_matcher_lock() -> bool:
+    global _mem_matcher_locked
+    if _inmemory_mode:
+        # Single-instance: simple flag prevents re-entrance within one event loop.
+        if _mem_matcher_locked:
+            return False
+        _mem_matcher_locked = True
+        return True
     if not _redis:
         return False
     try:
@@ -368,6 +433,10 @@ async def try_acquire_matcher_lock() -> bool:
 
 
 async def release_matcher_lock() -> None:
+    global _mem_matcher_locked
+    if _inmemory_mode:
+        _mem_matcher_locked = False
+        return
     if not _redis:
         return
     try:
@@ -398,6 +467,9 @@ async def run_matcher_rounds(max_rounds: int = 200) -> None:
     The caller is expected to hold the matcher lock; `_pop_pair` additionally
     guarantees atomicity so a lock expiry can never double-match or orphan.
     """
+    if _inmemory_mode:
+        await _run_matcher_rounds_inmemory(max_rounds)
+        return
     if not _redis:
         return
     rounds = 0
@@ -450,15 +522,65 @@ async def run_matcher_rounds(max_rounds: int = 200) -> None:
         await route(best_match, {"name": "PARTNER_FOUND", "data": "WAIT"})
 
 
+async def _run_matcher_rounds_inmemory(max_rounds: int = 200) -> None:
+    """In-memory equivalent of run_matcher_rounds (single-instance only)."""
+    rounds = 0
+    while rounds < max_rounds:
+        rounds += 1
+        if len(_mem_waiting) < 2:
+            return
+        # Oldest enqueue timestamp first (fairness mirrors Redis ZRANGE)
+        waiting = sorted(_mem_waiting.items(), key=lambda x: x[1])
+
+        candidate_a, _ = waiting[0]
+        if not await is_connected(candidate_a):
+            await remove_waiting(candidate_a)
+            continue
+
+        topics_a = _mem_topics.get(candidate_a, set())
+        best_match = None
+        first_alive = None
+
+        for other, _ in waiting[1:]:
+            if not await is_connected(other):
+                await remove_waiting(other)
+                continue
+            if first_alive is None:
+                first_alive = other
+            if not topics_a:
+                break  # no topic preference -> longest-waiting peer is enough
+            if topics_a & _mem_topics.get(other, set()):
+                best_match = other
+                break
+
+        if best_match is None:
+            best_match = first_alive
+        if best_match is None:
+            return  # only ghosts besides candidate_a
+
+        # Guard against a concurrent cleanup that ran during an await above
+        if candidate_a not in _mem_waiting or best_match not in _mem_waiting:
+            continue
+        _mem_waiting.pop(candidate_a, None)
+        _mem_waiting.pop(best_match, None)
+        _mem_topics.pop(candidate_a, None)
+        _mem_topics.pop(best_match, None)
+
+        await set_partners(candidate_a, best_match)
+        logger.info(f"Match formed: {candidate_a} <> {best_match}")
+        await route(candidate_a, {"name": "PARTNER_FOUND", "data": "GO_FIRST"})
+        await route(best_match, {"name": "PARTNER_FOUND", "data": "WAIT"})
+
+
 # --- Rate limiting --------------------------------------------------------
 
 async def check_rate_limit(ip: str) -> bool:
     """Sliding-window limiter (per IP). Returns True if the connection is allowed.
 
     Fails open (allows the connection) when Redis is unavailable so an outage
-    never locks every user out.
+    never locks every user out. In-memory mode also fails open.
     """
-    if not _redis:
+    if _inmemory_mode or not _redis:
         return True
     now_ms = int(time.time() * 1000)
     member = f"{now_ms}-{uuid.uuid4().hex[:8]}"
@@ -481,7 +603,13 @@ async def pubsub_listener() -> None:
     Uses a single pattern subscription (`yf:chan:*`) so connections never have
     to (un)subscribe individually; each instance simply ignores channels for
     clients it does not own. Reconnects with backoff on failure.
+
+    In in-memory mode (REDIS_URL not set), pub/sub is not needed
+    since there is only one instance; this task sleeps indefinitely.
     """
+    if _inmemory_mode:
+        while True:
+            await asyncio.sleep(3600)
     global _pubsub
     backoff = 0.5
     while True:
