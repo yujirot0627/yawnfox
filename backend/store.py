@@ -39,7 +39,18 @@ WAKEUP_CHANNEL = f"{PREFIX}:wakeup"         # matcher wakeup fan-out
 CHAN_PREFIX = f"{PREFIX}:chan:"             # per-client delivery channel prefix
 CHAN_PATTERN = f"{CHAN_PREFIX}*"
 MATCHER_LOCK_KEY = f"{PREFIX}:matcher:lock"
-MATCHER_LOCK_MS = 5000
+# Long enough that a realistic worst-case pass finishes inside it: 200 pairings x
+# (1 EVAL + 1 set_partners + 2 publishes) ~= 800 round-trips ~= 4s at Upstash RTT,
+# which was a coin flip against the previous 5000. Not refreshed mid-pass — the
+# lock is only a throughput optimisation now that _MATCH_LUA is atomic, and
+# run_matcher_rounds stops itself at 80% of this rather than outlive it.
+MATCHER_LOCK_MS = 15000
+
+# Only the head of the waiting queue can ever be matched, so the matcher reads a
+# bounded window of it instead of the whole pool. This bounds *topic search
+# quality*, never liveness: the fallback always pairs the two oldest live clients,
+# so nobody starves behind a window they cannot see past.
+MATCH_WINDOW = 64
 
 CONN_TTL = int(os.environ.get("CONN_TTL", "90"))            # presence key ttl (s)
 PARTNER_TTL = int(os.environ.get("PARTNER_TTL", "300"))     # partner mapping ttl (s)
@@ -103,16 +114,60 @@ redis.call('PEXPIRE', KEYS[1], window)
 return 1
 """
 
-# Atomically remove BOTH waiting members or neither (prevents orphaning a user
-# who was popped from the queue but never paired).
-_POP_PAIR_LUA = """
-local sa = redis.call('ZSCORE', KEYS[1], ARGV[1])
-local sb = redis.call('ZSCORE', KEYS[1], ARGV[2])
-if sa and sb then
-  redis.call('ZREM', KEYS[1], ARGV[1], ARGV[2])
-  return 1
+# Form ONE pair, atomically, in one command.
+#
+# This used to be a read-scan-pop dance in Python: ZRANGE the whole waiting pool,
+# then an EXISTS and (when the head client had topics) a SMEMBERS per candidate,
+# sequentially. At 5000 waiting that is a 5000-member payload plus up to ~10,000
+# sequential round-trips per round. Here the window read, the liveness filter, the
+# topic preference and the pop all happen inside Redis, so a pairing costs one
+# billed command whatever the pool depth.
+#
+# Selection semantics are unchanged from that Python version: the oldest live
+# waiter is the candidate (fairness), preferring the first peer sharing a topic,
+# otherwise falling back to the longest-waiting live peer.
+#
+# Popping both members here also makes the pop atomic by construction, which is
+# what _POP_PAIR_LUA used to buy separately — two instances racing can no longer
+# double-match or orphan a waiter, only duplicate work.
+_MATCH_LUA = """
+local prefix = ARGV[1]
+local window = tonumber(ARGV[2])
+local ids = redis.call('ZRANGE', KEYS[1], 0, window - 1)   -- oldest first
+local live = {}
+for i = 1, #ids do
+  if redis.call('EXISTS', prefix .. 'conn:' .. ids[i]) == 1 then
+    live[#live + 1] = ids[i]
+  else
+    redis.call('ZREM', KEYS[1], ids[i])
+    redis.call('DEL', prefix .. 'topics:' .. ids[i])
+  end
 end
-return 0
+if #live < 2 then
+  -- Ghosts were just evicted, so live members may sit past the window. Say so
+  -- rather than reporting the pool exhausted, or a block of >= window dead
+  -- entries at the head would wedge matching permanently.
+  if #live < #ids then return {'RETRY'} end
+  return {}
+end
+local a = live[1]
+local best = live[2]                       -- fallback: longest-waiting live peer
+local ta = redis.call('SMEMBERS', prefix .. 'topics:' .. a)
+if #ta > 0 then
+  local want = {}
+  for i = 1, #ta do want[ta[i]] = true end
+  for i = 2, #live do
+    local t = redis.call('SMEMBERS', prefix .. 'topics:' .. live[i])
+    local hit = false
+    for j = 1, #t do
+      if want[t[j]] then hit = true break end
+    end
+    if hit then best = live[i] break end
+  end
+end
+redis.call('ZREM', KEYS[1], a, best)
+redis.call('DEL', prefix .. 'topics:' .. a, prefix .. 'topics:' .. best)
+return {a, best}
 """
 
 # Release the matcher lock only if we still own it.
@@ -134,6 +189,28 @@ if p then
   return p
 end
 return false
+"""
+
+# Extend every TTL this instance is responsible for, in ONE command.
+# The previous version pipelined three EXPIREs per client. Two of those usually
+# targeted keys that do not exist — a client that is neither paired nor queued has
+# no partner or topics key — so they were billed and did nothing. Calls made from
+# inside a script are not billed separately, so a single EVAL removes that waste
+# and makes the heartbeat cost independent of how many clients are connected.
+# Keys are built from the prefix rather than declared in KEYS, the same approach
+# _CLEAR_PARTNER_LUA already takes; effect replication makes that safe.
+_REFRESH_LUA = """
+local prefix = ARGV[1]
+local conn_ttl = tonumber(ARGV[2])
+local partner_ttl = tonumber(ARGV[3])
+local topics_ttl = tonumber(ARGV[4])
+for i = 5, #ARGV do
+  local id = ARGV[i]
+  redis.call('EXPIRE', prefix .. 'conn:' .. id, conn_ttl)
+  redis.call('EXPIRE', prefix .. 'partner:' .. id, partner_ttl)
+  redis.call('EXPIRE', prefix .. 'topics:' .. id, topics_ttl)
+end
+return #ARGV - 4
 """
 
 
@@ -204,8 +281,31 @@ async def connect() -> bool:
 
 
 def is_ready() -> bool:
-    # In-memory mode is always ready; Redis mode requires an active connection.
+    """Can this instance accept traffic?
+
+    True in in-memory mode, and in Redis mode only while the connection is up.
+    This is deliberately NOT a statement about Redis — it answers "should we let a
+    client in", which is why it is true with no Redis at all. Use mode() to find
+    out how state is actually being stored.
+    """
     return _inmemory_mode or _redis is not None
+
+
+def mode() -> str:
+    """How shared state is stored right now. Reported by /ping.
+
+    "in-memory"  REDIS_URL is unset. No Redis is contacted; state lives in this
+                 process. Single instance only, and the rate limiter is disabled.
+    "redis"      Connected. Multi-instance safe.
+    "redis-down" REDIS_URL is set but the connection failed at startup, so the
+                 instance is refusing clients.
+
+    is_ready() collapses the first two into one boolean, which is what made a
+    misnamed REDIS_URL look healthy. This does not.
+    """
+    if _inmemory_mode:
+        return "in-memory"
+    return "redis" if _redis is not None else "redis-down"
 
 
 async def close() -> None:
@@ -266,7 +366,10 @@ async def is_connected(ws_id: str) -> bool:
 
 
 async def refresh(ws_ids: Iterable[str]) -> None:
-    """Heartbeat: extend TTLs for this instance's live clients."""
+    """Heartbeat: extend TTLs for this instance's live clients.
+
+    One EVAL for the whole batch, whatever the client count — see _REFRESH_LUA.
+    """
     if _inmemory_mode:
         return  # no TTLs to refresh in in-memory mode
     if not _redis:
@@ -275,12 +378,9 @@ async def refresh(ws_ids: Iterable[str]) -> None:
     if not ids:
         return
     try:
-        pipe = _redis.pipeline(transaction=False)
-        for wid in ids:
-            pipe.expire(conn_key(wid), CONN_TTL)
-            pipe.expire(partner_key(wid), PARTNER_TTL)
-            pipe.expire(topics_key(wid), TOPICS_TTL)
-        await pipe.execute()
+        await _redis.eval(
+            _REFRESH_LUA, 0, f"{PREFIX}:", CONN_TTL, PARTNER_TTL, TOPICS_TTL, *ids
+        )
     except RedisError as e:
         logger.warning(f"refresh failed: {e}")
 
@@ -445,93 +545,58 @@ async def release_matcher_lock() -> None:
         pass
 
 
-async def _pop_pair(a: str, b: str) -> bool:
-    try:
-        return await _redis.eval(_POP_PAIR_LUA, 1, WAITING_KEY, a, b) == 1
-    except RedisError:
-        return False
-
-
-async def _topics(ws_id: str) -> set:
-    try:
-        return await _redis.smembers(topics_key(ws_id)) or set()
-    except RedisError:
-        return set()
-
-
-async def run_matcher_rounds(max_rounds: int = 200) -> None:
+async def run_matcher_rounds(max_rounds: int = 200) -> bool:
     """Form pairs while at least two waiting clients remain.
 
-    Mirrors the original in-memory algorithm: oldest waiter first (fairness),
-    prefer a topic overlap, otherwise fall back to the longest-waiting peer.
-    The caller is expected to hold the matcher lock; `_pop_pair` additionally
-    guarantees atomicity so a lock expiry can never double-match or orphan.
+    Each round is one _MATCH_LUA call, which does the selection and the pop
+    atomically. The caller is expected to hold the matcher lock, but correctness
+    no longer depends on it: losing the lock mid-pass can only duplicate work.
+
+    Returns True if it stopped with work possibly remaining (deadline, round
+    cap, or ghosts evicted past the window), so the caller can go again rather
+    than wait out MATCH_POLL_SECONDS.
     """
     if _inmemory_mode:
-        await _run_matcher_rounds_inmemory(max_rounds)
-        return
+        return await _run_matcher_rounds_inmemory(max_rounds)
     if not _redis:
-        return
-    rounds = 0
-    while rounds < max_rounds:
-        rounds += 1
+        return False
+    # Stop before the lock we hold can expire under us, rather than spending a
+    # command per round to refresh it.
+    deadline = time.monotonic() + MATCHER_LOCK_MS / 1000 * 0.8
+    for _ in range(max_rounds):
+        if time.monotonic() > deadline:
+            return True
         try:
-            waiting = await _redis.zrange(WAITING_KEY, 0, -1)  # oldest first
+            pair = await _redis.eval(
+                _MATCH_LUA, 1, WAITING_KEY, f"{PREFIX}:", MATCH_WINDOW
+            )
         except RedisError as e:
-            logger.warning(f"zrange failed: {e}")
-            return
-        if len(waiting) < 2:
-            return
-
-        candidate_a = waiting[0]
-        if not await is_connected(candidate_a):
-            await remove_waiting(candidate_a)
-            continue
-
-        topics_a = await _topics(candidate_a)
-        best_match = None
-        first_alive = None
-
-        for other in waiting[1:]:
-            if not await is_connected(other):
-                await remove_waiting(other)
-                continue
-            if first_alive is None:
-                first_alive = other
-            if not topics_a:
-                break  # no topic preference -> longest-waiting peer is enough
-            if topics_a & await _topics(other):
-                best_match = other
-                break
-
-        if best_match is None:
-            best_match = first_alive
-        if best_match is None:
-            return  # only ghosts besides candidate_a
-
-        if not await _pop_pair(candidate_a, best_match):
-            continue  # lost a race; re-read the pool
-
-        try:
-            await _redis.delete(topics_key(candidate_a), topics_key(best_match))
-        except RedisError:
-            pass
-        await set_partners(candidate_a, best_match)
-        logger.info(f"Match formed: {candidate_a} <> {best_match}")
-        await route(candidate_a, {"name": "PARTNER_FOUND", "data": "GO_FIRST"})
-        await route(best_match, {"name": "PARTNER_FOUND", "data": "WAIT"})
+            logger.warning(f"match eval failed: {e}")
+            return False
+        if not pair:
+            return False        # pool exhausted
+        if len(pair) < 2:
+            continue            # 'RETRY': ghosts evicted, live peers may follow
+        a, b = pair[0], pair[1]
+        await set_partners(a, b)
+        logger.info(f"Match formed: {a} <> {b}")
+        await route(a, {"name": "PARTNER_FOUND", "data": "GO_FIRST"})
+        await route(b, {"name": "PARTNER_FOUND", "data": "WAIT"})
+    return True
 
 
-async def _run_matcher_rounds_inmemory(max_rounds: int = 200) -> None:
+async def _run_matcher_rounds_inmemory(max_rounds: int = 200) -> bool:
     """In-memory equivalent of run_matcher_rounds (single-instance only)."""
     rounds = 0
     while rounds < max_rounds:
         rounds += 1
         if len(_mem_waiting) < 2:
-            return
-        # Oldest enqueue timestamp first (fairness mirrors Redis ZRANGE)
-        waiting = sorted(_mem_waiting.items(), key=lambda x: x[1])
+            return False
+        # Oldest enqueue timestamp first (fairness mirrors Redis ZRANGE), bounded
+        # to the same window the Lua matcher reads.
+        waiting = sorted(_mem_waiting.items(), key=lambda x: x[1])[:MATCH_WINDOW]
 
+        evicted = False
         candidate_a, _ = waiting[0]
         if not await is_connected(candidate_a):
             await remove_waiting(candidate_a)
@@ -544,6 +609,7 @@ async def _run_matcher_rounds_inmemory(max_rounds: int = 200) -> None:
         for other, _ in waiting[1:]:
             if not await is_connected(other):
                 await remove_waiting(other)
+                evicted = True
                 continue
             if first_alive is None:
                 first_alive = other
@@ -556,7 +622,11 @@ async def _run_matcher_rounds_inmemory(max_rounds: int = 200) -> None:
         if best_match is None:
             best_match = first_alive
         if best_match is None:
-            return  # only ghosts besides candidate_a
+            # Only ghosts besides candidate_a. If any were just evicted, live
+            # peers may sit past the window -- mirrors the Lua 'RETRY' branch.
+            if evicted:
+                continue
+            return False
 
         # Guard against a concurrent cleanup that ran during an await above
         if candidate_a not in _mem_waiting or best_match not in _mem_waiting:
@@ -570,6 +640,7 @@ async def _run_matcher_rounds_inmemory(max_rounds: int = 200) -> None:
         logger.info(f"Match formed: {candidate_a} <> {best_match}")
         await route(candidate_a, {"name": "PARTNER_FOUND", "data": "GO_FIRST"})
         await route(best_match, {"name": "PARTNER_FOUND", "data": "WAIT"})
+    return True  # hit the round cap; work may remain
 
 
 # --- Rate limiting --------------------------------------------------------

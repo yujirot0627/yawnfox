@@ -58,6 +58,15 @@ MAX_MESSAGE_BYTES = 65536
 # Message names that may be relayed verbatim to a partner (WebRTC signaling).
 ALLOWED_RELAY = {"SDP_OFFER", "SDP_ANSWER", "SDP_ICE_CANDIDATE"}
 
+# How long the matcher waits before checking the pool without having been woken.
+# Matching itself is event driven: enqueue_waiting -> trigger_wakeup() sets
+# match_event on this instance (never lost) and publishes yf:wakeup for the others.
+# This timeout only recovers the rare cases that produce no event — a wakeup lost
+# while pub/sub was reconnecting, a pass that stopped at max_rounds with work left,
+# or losing the matcher lock race — so it can be long. It was 1s, which turned the
+# safety net into the single largest Redis cost in the system.
+MATCH_POLL_SECONDS = 15
+
 # --- Helper Classes ---
 
 class ManagedWebSocket:
@@ -141,17 +150,29 @@ async def matcher_loop():
         try:
             # Wake on a local/cross-instance signal, or poll as a fallback.
             try:
-                await asyncio.wait_for(match_event.wait(), timeout=1.0)
+                await asyncio.wait_for(match_event.wait(), timeout=MATCH_POLL_SECONDS)
             except asyncio.TimeoutError:
                 pass
             match_event.clear()
+
+            # An instance holding no sockets of its own has nothing to contribute:
+            # whoever holds the waiting clients has had match_event set locally by
+            # enqueue_waiting -> trigger_wakeup, which cannot be lost, so they are
+            # already matching. Without this an idle deployment spent a ZCARD every
+            # second forever — 86,400 Redis commands a day to discover nothing.
+            if not local_websockets:
+                continue
 
             if await store.waiting_count() < 2:
                 continue
             if not await store.try_acquire_matcher_lock():
                 continue  # another instance is matching right now
             try:
-                await store.run_matcher_rounds()
+                # True -> the pass stopped early (deadline / round cap / ghosts
+                # past the window) with work possibly left. Go again now instead
+                # of waiting out MATCH_POLL_SECONDS.
+                if await store.run_matcher_rounds():
+                    match_event.set()
             finally:
                 await store.release_matcher_lock()
         except asyncio.CancelledError:
@@ -345,10 +366,15 @@ async def lifespan(app: Starlette):
 
 
 async def ping(request):
+    # "mode" is the honest field: it separates in-memory from a live Redis, which
+    # the old boolean did not — it reported true for both, so a REDIS_URL that was
+    # never set looked exactly like a healthy cluster.
     return JSONResponse({
         "message": "Server is awake",
         "instance": store.instance_id(),
-        "redis": store.is_ready(),
+        "mode": store.mode(),          # "in-memory" | "redis" | "redis-down"
+        "ready": store.is_ready(),     # accepting clients?
+        "connections": len(local_websockets),
     })
 
 
