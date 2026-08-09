@@ -1,6 +1,6 @@
 <script>
-	import { onMount, tick } from 'svelte';
-	import { setupPeerConnection } from '$lib/peer.js';
+	import { onMount, onDestroy, tick } from 'svelte';
+	import { setupPeerConnection, acquireLocalMedia, releaseLocalMedia } from '$lib/peer.js';
 	import Game from '$lib/Game.svelte';
 	import {
 		Video,
@@ -27,6 +27,10 @@
 	let localVideo;
 	let remoteVideo;
 	let gameRef;
+	// Camera + mic for the whole visit to this page. Acquired once and handed to
+	// every PeerConnection, so changing partner never re-opens the device; released
+	// in onDestroy. isCamOn rides on this stream's track.enabled, never on stop().
+	let localStream = null;
 	// While a game runs the layout is forced to 50/50 with your own camera on the
 	// left, matching the side your paddle is drawn on. layoutMode is only
 	// overridden, never written to, so the user's choice returns on its own.
@@ -132,7 +136,10 @@
 	// new callback can't be wired into only one of them.
 	function peerOptions() {
 		return {
-			onLocalMedia: (stream) => (localVideo.srcObject = stream),
+			// The session's one stream. Every peer borrows it and none of them may stop
+			// it, so the camera-off state simply persists: it lives on a track object
+			// that outlives the peer, which is also what CAM_STATE reads on channel open.
+			localStream,
 			onRemoteMedia: (stream) => (remoteVideo.srcObject = stream),
 			onStateChange: setState,
 			onRemoteCamState: (enabled) => {
@@ -147,23 +154,44 @@
 	onMount(async () => {
 		window.setAppState = setState;
 
+		localStream = await acquireLocalMedia();
+		if (!localStream) {
+			// Refused or unavailable. Nothing to chat with, so no peer and no socket.
+			setState('CAMERA_FAILED');
+			return;
+		}
+		localVideo.srcObject = localStream; // set once; it never changes again
+
 		peer = await setupPeerConnection(peerOptions());
 
 		isRemoteCamOn = true;
+	});
 
-		return () => {
-			peer?.sendBye();
-			peer = null;
-		};
+	// Cleanup lives here rather than in a function returned from onMount: that
+	// callback is async, so it returns a Promise, and Svelte only invokes a returned
+	// cleanup when it is a function. The old return never ran.
+	onDestroy(() => {
+		peer?.sendBye();
+		peer = null;
+		// Leaving the page is the one moment the camera should actually go out.
+		releaseLocalMedia(localStream);
+		localStream = null;
 	});
 
 	async function createPeer() {
 		peer = await setupPeerConnection(peerOptions(), false);
 
+		// init() bails out without a socket if it was handed no stream. Don't wait on
+		// a socket that was never created.
+		if (!peer.sdpExchange) return;
+
 		await waitForWebSocketOpen(peer.sdpExchange);
 
+		// The next stranger is unknown, so assume their camera is on until CAM_STATE
+		// says otherwise. isCamOn is deliberately NOT reset: the same stream carries
+		// over, so a camera the user turned off stays off, and turning one back on is
+		// a decision only they get to make.
 		isRemoteCamOn = true;
-		isCamOn = true;
 	}
 
 	function waitForWebSocketOpen(ws) {
@@ -217,7 +245,9 @@
 	}
 
 	function toggleCam() {
-		const videoTracks = localVideo?.srcObject?.getVideoTracks?.();
+		// enabled, never stop() — stopping would end the session's shared track and it
+		// could not be turned back on.
+		const videoTracks = localStream?.getVideoTracks?.();
 		if (videoTracks && videoTracks.length) {
 			videoTracks[0].enabled = !videoTracks[0].enabled;
 			isCamOn = videoTracks[0].enabled;
@@ -244,16 +274,12 @@
 		<!-- Main View (Remote or Split) -->
 		<div
 			class={`relative h-full w-full transition-all duration-300
-			${gameActive ? 'flex flex-row' : layoutMode === 'split' ? 'flex flex-col md:flex-row' : ''}`}
+			${gameActive || layoutMode === 'split' ? 'flex flex-col md:flex-row' : ''}`}
 		>
 			<!-- Remote / Main Video -->
 			<div
 				class={`relative overflow-hidden bg-black ${
-					gameActive
-						? 'h-full w-1/2'
-						: layoutMode === 'split'
-							? 'h-1/2 md:h-full md:w-1/2'
-							: 'h-full w-full'
+					gameActive || layoutMode === 'split' ? 'h-1/2 md:h-full md:w-1/2' : 'h-full w-full'
 				}`}
 			>
 				<!-- svelte-ignore a11y_media_has_caption -->
@@ -354,7 +380,9 @@
 				class={`z-30 overflow-hidden bg-gray-800 transition-all duration-300
 				${
 					gameActive
-						? 'relative order-first h-full w-1/2 border-r border-gray-700'
+						? // order-first puts your own camera on the side your paddle is drawn:
+							// top when the split is vertical, left when it is horizontal.
+							'relative order-first h-1/2 border-b border-gray-700 md:h-full md:w-1/2 md:border-r md:border-b-0'
 						: layoutMode === 'split'
 							? 'relative h-1/2 border-t border-gray-700 md:h-full md:w-1/2 md:border-t-0 md:border-l'
 							: 'absolute right-4 bottom-4 h-32 w-24 rounded-xl border-2 border-white/20 shadow-2xl sm:h-48 sm:w-36'
