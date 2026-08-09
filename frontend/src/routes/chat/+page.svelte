@@ -147,8 +147,21 @@
 			},
 			onChatMessage: handleChatMessage,
 			onChatReady: (ready) => (isChatReady = ready),
-			onGameMessage: (msg) => gameRef?.handleMessage(msg)
+			onGameMessage: (msg) => gameRef?.handleMessage(msg),
+			onConnectFailed: handleConnectFailed
 		};
+	}
+
+	// A match formed but the WebRTC handshake never completed (no offer, ICE
+	// stalled, or the partner gave up first). Drop the pair and go straight back
+	// to searching with the same topics — the stranger was never seen, so there
+	// is nothing to "leave" from the user's point of view.
+	async function handleConnectFailed() {
+		peer?.disconnect('LOCAL'); // sends LEAVE so the server unpairs both sides
+		await createPeer();
+		startPairing();
+		// After startPairing: CONNECTING clears messages, so add this one last.
+		addMessage("Couldn't connect to that stranger. Looking for someone new…", 'system');
 	}
 
 	onMount(async () => {

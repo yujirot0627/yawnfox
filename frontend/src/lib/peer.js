@@ -1,3 +1,8 @@
+// How long a formed match may sit without a WebRTC connection before this side
+// gives up and asks to be re-queued. Override per-instance with
+// options.connectTimeoutMs (used by the self-check).
+const CONNECT_TIMEOUT_MS = 15000;
+
 export class PeerConnection {
 	sdpExchange;
 	peerConnection;
@@ -14,6 +19,7 @@ export class PeerConnection {
 		this._remoteDescSet = false;
 		this._pendingCandidates = [];
 		this._wsBuffer = [];
+		this._connectTimer = null;
 	}
 
 	async init() {
@@ -63,7 +69,15 @@ export class PeerConnection {
 			if (message.name === 'SDP_ICE_CANDIDATE') this.handleIceCandidate(JSON.parse(message.data));
 			if (message.name === 'PARTNER_LEFT') {
 				console.log('Stranger left.');
-				this.disconnect('REMOTE');
+				if (this.state === 'CONNECTED') {
+					this.disconnect('REMOTE');
+				} else {
+					// Matched but never connected: the partner gave up (their own
+					// connect timeout, or they left mid-handshake). The user never saw
+					// this stranger, so recover like a local timeout — re-queue instead
+					// of showing "Stranger disconnected" for nobody.
+					this._connectFailed();
+				}
 			}
 			if (message.name === 'RATE_LIMITED' || message.name === 'SERVER_UNAVAILABLE') {
 				console.warn(message.name, message.message);
@@ -280,13 +294,39 @@ export class PeerConnection {
 	}
 
 	setState(state) {
+		// Any transition ends the post-match connect wait: CONNECTED because the
+		// handshake succeeded, DISCONNECTED_* because the pair is already being
+		// torn down (nothing else transitions while the timer is armed).
+		clearTimeout(this._connectTimer);
 		this.state = state;
 		this.options?.onStateChange?.(state);
+	}
+
+	_connectFailed() {
+		if (this.options?.onConnectFailed) {
+			this.options.onConnectFailed();
+		} else {
+			// No handler wired: at least don't stay stuck on a dead pair.
+			this.disconnect('REMOTE');
+		}
 	}
 
 	handlePartnerFound(instructions) {
 		// Also used by the mini game to break a tie when both peers invite at once.
 		this.isOfferer = instructions === 'GO_FIRST';
+
+		// Matched, but nothing guarantees the handshake completes: the offer may
+		// never arrive and ICE may never start, which would leave both sides
+		// paired forever with no event to react to. Give it a deadline. The
+		// sdpExchange check closes the race where disconnect() already ran but
+		// this callback was in flight.
+		clearTimeout(this._connectTimer);
+		this._connectTimer = setTimeout(() => {
+			if (this.state !== 'CONNECTED' && this.sdpExchange) {
+				console.warn('No WebRTC connection after match; giving up on this pair');
+				this._connectFailed();
+			}
+		}, this.options?.connectTimeoutMs ?? CONNECT_TIMEOUT_MS);
 
 		if (instructions !== 'GO_FIRST') {
 			return console.log('Partner found, waiting for SDP offer ...');
@@ -375,9 +415,11 @@ export class PeerConnection {
 		});
 	}
 
-	tryHandle(command, callback) {
+	async tryHandle(command, callback) {
 		try {
-			callback();
+			// await so async handlers' rejections land in this catch instead of
+			// becoming silent unhandled promise rejections.
+			await callback();
 		} catch (error) {
 			console.error(`Failed to handle ${command}`, error);
 		}
