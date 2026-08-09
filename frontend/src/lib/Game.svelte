@@ -10,7 +10,7 @@
 		PADDLE_W,
 		HOME_X
 	} from '$lib/pong.js';
-	import { loadNose, trackNose } from '$lib/nose.js';
+	import { loadNose, trackFace } from '$lib/nose.js';
 	import TicTacToeBoard from '$lib/TicTacToeBoard.svelte';
 	import {
 		emptyBoard,
@@ -33,15 +33,30 @@
 
 	const dispatch = createEventDispatcher();
 
-	// A nose only travels across the middle of the frame, so amplify its movement
-	// around a baseline captured during the countdown. X gets a smaller gain
-	// because it only has to cover half the field, not the full height.
+	// A face only travels across the middle of the frame, so amplify its movement
+	// around a baseline captured during the countdown. The lateral gain is larger
+	// because that axis covers the full field; the depth gain only covers a half,
+	// and overshooting it just parks you on the halfway line, so it can be lower.
+	//
+	// The detector's box centre wobbles a pixel or two between samples. At the old
+	// gains that wobble swung the paddle ~30% of its own length while the player sat
+	// still, which is the shake seen in play. Gain is the only good lever on it:
+	// simulating the chain shows SMOOTHING 25 -> 8 removes barely a third of the
+	// jitter but costs 67ms -> 350ms of settle time, because the noise arrives at the
+	// 30Hz sample rate and cannot be filtered without filtering real head movement
+	// out with it. So the gains carry the fix and SMOOTHING stays responsive.
+	//
+	// Halving the gains does NOT cost coverage: the paddle is PADDLE_H (0.2) long, so
+	// a centre that reaches 0.2..0.8 already guards the whole field, which needs a
+	// 15% frame-height lean at 2.0. Measured: lateral shake 30% -> 19% of a paddle,
+	// depth 17% -> 11%, for +50ms settle.
 	// ponytail: fixed gains; make them settings sliders if people ask.
-	const GAIN_X = 1.3;
-	const GAIN_Y = 2.5;
+	const GAIN_DEPTH = 1.2; // towards / away from your own goal
+	const GAIN_LATERAL = 2.0; // across your own goal mouth
 	const STATE_HZ = 30; // host -> guest ball updates
-	const PADDLE_HZ = 20; // each side -> the other
-	const SMOOTHING = 12; // paddle lerp rate; detection is ~12fps, render is 60
+	const PADDLE_HZ = 30; // each side -> the other; matches the detection rate
+	// Paddle lerp rate — a first-order filter with time constant 1/SMOOTHING.
+	const SMOOTHING = 20;
 	const INVITE_TIMEOUT_MS = 20000;
 	const OVER_MS = 5000;
 	const NOTICE_MS = 5000;
@@ -96,6 +111,15 @@
 	let ballImg = null; // decoded sprite
 	let ballTile = null; // sprite pre-rasterised at draw size, refreshed on resize
 
+	// Below Tailwind's `md`, the 50/50 camera split stacks vertically, so the
+	// playfield rotates: goals top/bottom instead of left/right. Physics is
+	// unaffected — it stays in host space and only rendering and input rotate,
+	// which also means a desktop and a mobile player can share a game.
+	// 767px must stay in sync with the `md:` breakpoint used in chat/+page.svelte.
+	const VERTICAL_QUERY = '(max-width: 767px)';
+	let vertical = false;
+	let mediaQuery = null;
+
 	$: myScore = role === 'host' ? score.host : score.guest;
 	$: theirScore = role === 'host' ? score.guest : score.host;
 	$: mySide = role === 'host' ? 'host' : 'guest';
@@ -126,6 +150,14 @@
 		);
 	}
 
+	// Warm both downloads the moment a game is on the table, rather than at kick-off.
+	// The face model is ~1.5MB on a cold cache and the countdown only buys 2.8s, so
+	// starting at begin() meant the first seconds were played with a dead paddle.
+	function prefetchHockey() {
+		loadBallSprite();
+		loadNose().catch(() => {}); // startNoseTracking() surfaces a real failure
+	}
+
 	/* ---------- public API (called by the chat page) ---------- */
 
 	export function invite(which = 'hockey') {
@@ -149,7 +181,7 @@
 		if (!peer?.send({ type: 'game_invite', kind: which })) return;
 		kind = which;
 		phase = 'inviting';
-		if (kind === 'hockey') loadBallSprite(); // fetch now so it is ready by kick-off
+		if (kind === 'hockey') prefetchHockey();
 		timers.push(
 			setTimeout(() => {
 				if (phase !== 'inviting') return;
@@ -179,7 +211,7 @@
 					peer?.send({ type: 'game_decline', reason: 'busy' });
 					return;
 				}
-				if (kind === 'hockey') loadBallSprite(); // ready by kick-off
+				if (kind === 'hockey') prefetchHockey();
 				break;
 
 			case 'game_accept':
@@ -227,14 +259,24 @@
 				remoteTarget = clampPaddle({ x: m.x, y: m.y }, role === 'host' ? 'guest' : 'host');
 				break;
 
-			case 'game_state':
+			case 'game_state': {
 				if (kind !== 'hockey') return;
 				// Host is authoritative; the guest just mirrors it on draw.
-				if (role === 'guest' && state && m.ball) {
-					state.ball = m.ball;
-					if (m.score) score = m.score;
+				if (role !== 'guest' || !state) return;
+				// Checked rather than trusted: one bad number here would make the guest's
+				// own extrapolation NaN from then on, and the ball would simply vanish.
+				const b = m.ball;
+				if (![b?.x, b?.y, b?.vx, b?.vy].every(Number.isFinite)) return;
+				state.ball = { x: b.x, y: b.y, vx: b.vx, vy: b.vy };
+
+				const s = m.score;
+				if (!Number.isFinite(s?.host) || !Number.isFinite(s?.guest)) return;
+				if (s.host !== score.host || s.guest !== score.guest) {
+					score = { host: s.host, guest: s.guest };
+					recentre(); // a goal just landed — match the host's paddle reset
 				}
 				break;
+			}
 		}
 	}
 
@@ -406,7 +448,7 @@
 		try {
 			await loadNose();
 			if (phase === 'idle' || phase === 'over') return;
-			stopNose = trackNose(localVideo, onNose);
+			stopNose = trackFace(localVideo, onNose);
 		} catch (err) {
 			console.warn('face tracking unavailable', err);
 			noseWarning = 'Face tracking unavailable — paddle stays centred.';
@@ -418,11 +460,29 @@
 		stopNose = null;
 	}
 
+	// A goal puts both paddles back on their home spot for the restart. The player's
+	// current face position becomes the new resting pose at the same moment —
+	// without that the snap would be undone on the very next frame, since the paddle
+	// tracks the face continuously. It doubles as a re-zero for the drift you build
+	// up shifting in your seat, which is a second source of "too sensitive".
+	function recentre() {
+		myPaddle = myTarget = homePaddle(mySide);
+		remotePaddle = remoteTarget = homePaddle(role === 'host' ? 'guest' : 'host');
+		if (nose) baseline = nose;
+	}
+
 	function onNose(pos) {
 		nose = pos;
+		if (!pos) return;
 		// Collect a resting position while the countdown runs, so the paddle is
 		// centred wherever the player's face actually sits.
-		if (pos && phase === 'countdown') baselineSamples.push(pos);
+		if (phase === 'countdown') baselineSamples.push(pos);
+		// Tracking can also come up *after* the countdown has ended: the model is
+		// ~1.5MB on a cold cache and the countdown is only 2.8s. update() parks the
+		// paddle at home whenever there is no baseline, and the countdown baseline is
+		// computed exactly once — so a slow load used to freeze that player's paddle
+		// for the whole game, which is what made it look motionless to their opponent.
+		else if (!baseline && phase === 'playing') baseline = pos;
 	}
 
 	/* ---------- loop ---------- */
@@ -446,15 +506,21 @@
 	}
 
 	function update(dt, t) {
-		// Nose -> paddle, steered in "view space" where my own half is the left one.
+		// Face centre -> paddle, steered in "view space" where my own goal is the
+		// near one. Which head axis drives which paddle axis follows the layout:
+		// stacked cameras mean I move my head sideways to slide across my goal.
 		// No face (or no baseline yet) parks the paddle on its home spot.
-		const view =
-			nose == null || baseline == null
-				? { x: HOME_X, y: 0.5 }
-				: {
-						x: HOME_X + (nose.x - baseline.x) * GAIN_X,
-						y: 0.5 + (nose.y - baseline.y) * GAIN_Y
-					};
+		let view = { x: HOME_X, y: 0.5 };
+		if (nose && baseline) {
+			const dx = nose.x - baseline.x;
+			const dy = nose.y - baseline.y;
+			const depth = vertical ? dy : dx; // towards / away from my own goal
+			const lateral = vertical ? dx : dy; // across my own goal mouth
+			view = {
+				x: HOME_X + depth * GAIN_DEPTH,
+				y: 0.5 + lateral * GAIN_LATERAL
+			};
+		}
 		myTarget = clampPaddle(viewToHost(view), mySide);
 
 		const k = Math.min(1, dt * SMOOTHING);
@@ -478,7 +544,10 @@
 			// Host space: host paddle left, guest paddle right. step() re-clamps both,
 			// so a bad value from the peer can't corrupt the simulation.
 			step(state, dt, myPaddle, remotePaddle);
-			if (state.scored) score = { ...state.score };
+			if (state.scored) {
+				score = { ...state.score };
+				recentre(); // the guest mirrors this off the score change in game_state
+			}
 
 			if (t - lastStateSent > 1000 / STATE_HZ) {
 				lastStateSent = t;
@@ -553,26 +622,37 @@
 		if (kind !== 'hockey') return; // X/O draws in the DOM, not on the canvas
 		if (phase !== 'playing' && phase !== 'countdown') return;
 
-		// Everything below is in host space; the guest mirrors so that each player
-		// always sees their own paddle on the left.
-		const mx = (x) => (role === 'host' ? x : 1 - x) * w;
+		// Host space -> screen. `depth` runs from your own goal to theirs, `lateral`
+		// runs across the goal mouth. The guest mirrors depth so each player sees
+		// their own goal first: on the left when horizontal, at the top when the
+		// cameras are stacked.
+		const own = (d) => (role === 'host' ? d : 1 - d);
+		const sx = (d, lat) => (vertical ? lat : own(d)) * w;
+		const sy = (d, lat) => (vertical ? own(d) : lat) * h;
 
+		// Halfway line, perpendicular to the direction of play.
 		ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-		ctx.lineWidth = 2 * (w / 800);
+		ctx.lineWidth = 2 * (Math.min(w, h) / 800);
 		ctx.setLineDash([10, 12]);
 		ctx.beginPath();
-		ctx.moveTo(w / 2, 0);
-		ctx.lineTo(w / 2, h);
+		if (vertical) {
+			ctx.moveTo(0, h / 2);
+			ctx.lineTo(w, h / 2);
+		} else {
+			ctx.moveTo(w / 2, 0);
+			ctx.lineTo(w / 2, h);
+		}
 		ctx.stroke();
 		ctx.setLineDash([]);
 
 		const hostP = role === 'host' ? myPaddle : remotePaddle;
 		const guestP = role === 'host' ? remotePaddle : myPaddle;
-		drawPaddle(ctx, mx(hostP.x), hostP.y, w, h, role === 'host');
-		drawPaddle(ctx, mx(guestP.x), guestP.y, w, h, role === 'guest');
+		drawPaddle(ctx, sx(hostP.x, hostP.y), sy(hostP.x, hostP.y), w, h, role === 'host');
+		drawPaddle(ctx, sx(guestP.x, guestP.y), sy(guestP.x, guestP.y), w, h, role === 'guest');
 
 		if (phase === 'playing' && state) {
-			drawBall(ctx, mx(state.ball.x), state.ball.y * h, BALL_R * Math.min(w, h));
+			const b = state.ball;
+			drawBall(ctx, sx(b.x, b.y), sy(b.x, b.y), BALL_R * Math.min(w, h));
 		}
 	}
 
@@ -593,16 +673,19 @@
 		ctx.shadowBlur = 0;
 	}
 
+	// cx / cy are already screen pixels. The paddle is thin along the direction of
+	// play and wide across it, so the two dimensions swap with the orientation.
 	function drawPaddle(ctx, cx, cy, w, h, isMine) {
-		const pw = PADDLE_W * w;
-		const ph = PADDLE_H * h;
+		const pw = (vertical ? PADDLE_H : PADDLE_W) * w;
+		const ph = (vertical ? PADDLE_W : PADDLE_H) * h;
 		const x = cx - pw / 2;
-		const y = cy * h - ph / 2;
+		const y = cy - ph / 2;
 		ctx.fillStyle = isMine ? '#facc15' : '#ffffff';
 		// roundRect is missing on Safari < 16; square paddles beat throwing every frame.
 		if (ctx.roundRect) {
 			ctx.beginPath();
-			ctx.roundRect(x, y, pw, ph, pw / 2);
+			// Radius follows the thin side, whichever axis that is.
+			ctx.roundRect(x, y, pw, ph, Math.min(pw, ph) / 2);
 			ctx.fill();
 		} else {
 			ctx.fillRect(x, y, pw, ph);
@@ -614,10 +697,20 @@
 		fitCanvas();
 		resizeObserver = new ResizeObserver(fitCanvas);
 		resizeObserver.observe(node);
+
+		// Track the split direction so rotating a phone re-orients the playfield
+		// mid-game. Nothing is sent over the wire — orientation is purely local.
+		mediaQuery = window.matchMedia(VERTICAL_QUERY);
+		vertical = mediaQuery.matches;
+		const onOrientation = (e) => (vertical = e.matches);
+		mediaQuery.addEventListener('change', onOrientation);
+
 		return {
 			destroy() {
 				resizeObserver?.disconnect();
 				resizeObserver = null;
+				mediaQuery?.removeEventListener('change', onOrientation);
+				mediaQuery = null;
 			}
 		};
 	}
@@ -644,7 +737,9 @@
 				</p>
 			{/if}
 		{:else}
-			<div class="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+			<!-- No backdrop: the video chat is the main content and stays fully
+			     visible behind the board. -->
+			<div class="absolute inset-0 flex items-center justify-center">
 				<TicTacToeBoard {board} {myMark} {myTurn} {winLine} on:move={(e) => playCell(e.detail)} />
 			</div>
 		{/if}
@@ -730,16 +825,25 @@
 		</div>
 	{/if}
 
-	<!-- Result -->
+	<!-- Result. Same treatment as the board: no backdrop, only a faint tint, so the
+	     video chat stays visible behind it. Legibility comes from drop shadows. -->
 	{#if phase === 'over' && outcome}
-		<div class="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-			<div class="rounded-2xl border border-gray-800 bg-gray-900 px-10 py-7 text-center shadow-2xl">
-				<p class="mb-3 text-sm tracking-widest text-gray-400 uppercase">{gameLabel}</p>
+		<div class="absolute inset-0 flex items-center justify-center">
+			<div
+				class="rounded-2xl border-2 border-white/50 bg-black/25 px-10 py-7 text-center shadow-2xl"
+			>
+				<p
+					class="mb-3 text-sm tracking-widest text-white/70 uppercase drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+				>
+					{gameLabel}
+				</p>
 
 				{#if kind === 'hockey' && finalScore}
-					<p class="text-5xl font-black text-white tabular-nums">
+					<p
+						class="text-5xl font-black text-white tabular-nums drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]"
+					>
 						<span class="text-yellow-400">{finalScore.me}</span>
-						<span class="mx-2 text-gray-600">-</span>
+						<span class="mx-2 text-white/50">-</span>
 						<span>{finalScore.them}</span>
 					</p>
 				{:else if kind === 'ttt'}
@@ -749,7 +853,7 @@
 					</div>
 				{/if}
 
-				<p class="mt-4 text-lg font-bold text-white">
+				<p class="mt-4 text-lg font-bold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]">
 					{outcome === 'win'
 						? 'You win!'
 						: outcome === 'lose'

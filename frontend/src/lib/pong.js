@@ -4,7 +4,7 @@
 // themselves on the left.
 // No DOM, no Svelte — run `node src/lib/pong.js` to self-check.
 
-export const BALL_R = 0.018;
+export const BALL_R = 0.028;
 export const PADDLE_H = 0.2;
 export const PADDLE_W = 0.028;
 // Where a paddle rests when its owner's face is centred (or absent), measured
@@ -20,14 +20,22 @@ const MAX_DT = 0.05; // clamp so a throttled tab can't fast-forward the rally
 const SUBSTEP = 0.008;
 const MIN_VX_FRACTION = 0.25; // stops the ball settling into a vertical loop
 const SPIN = 0.35; // angle added by hitting away from the paddle's centre
+// Where a serve starts on the lateral axis. A goal restarts from up against the
+// wall (drawn as the top of the field in landscape) so it reads as a fresh serve
+// rather than a rebound; kick-off starts mid-field.
+const SERVE_LATERAL = BALL_R + 0.02;
 
 export function newGame() {
-	return { ball: centreBall(1), score: { host: 0, guest: 0 }, speed: START_SPEED, scored: null };
+	return { ball: serve(1, 0.5), score: { host: 0, guest: 0 }, speed: START_SPEED, scored: null };
 }
 
-// serveDir: +1 sends the ball towards the guest (right), -1 towards the host.
-function centreBall(serveDir) {
-	return { x: 0.5, y: 0.5, vx: serveDir * START_SPEED, vy: START_SPEED * 0.35 };
+/**
+ * serveDir: +1 sends the ball towards the guest (right), -1 towards the host.
+ * After a goal it always points at the side that just conceded.
+ * `y` is where the serve starts across the goal mouth.
+ */
+function serve(serveDir, y) {
+	return { x: 0.5, y, vx: serveDir * START_SPEED, vy: START_SPEED * 0.5 };
 }
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -96,12 +104,12 @@ function integrate(state, dt, hp, gp) {
 		state.score.guest += 1;
 		state.scored = 'guest';
 		state.speed = START_SPEED;
-		state.ball = centreBall(-1);
+		state.ball = serve(-1, SERVE_LATERAL); // back at the host, who conceded
 	} else if (b.x > 1 + BALL_R) {
 		state.score.host += 1;
 		state.scored = 'host';
 		state.speed = START_SPEED;
-		state.ball = centreBall(1);
+		state.ball = serve(1, SERVE_LATERAL); // back at the guest, who conceded
 	}
 }
 
@@ -219,6 +227,27 @@ function demo() {
 	s.ball = { x: G.x - 0.05, y: 0.5, vx: 0.5, vy: 0 };
 	for (let i = 0; i < 20 && s.ball.vx > 0; i++) step(s, 0.016, H, G);
 	assert(s.ball.vx < 0, 'guest paddle should send the ball back to the left');
+
+	// --- a goal restarts from the wall, aimed at whoever just conceded ---
+	// Paddles parked at the lateral extremes so they are out of the ball's lane.
+	const parkedH = { x: HOME_X, y: 0.1 };
+	const parkedG = { x: 1 - HOME_X, y: 0.9 };
+
+	s = newGame();
+	s.ball = { x: 0.9, y: 0.5, vx: 0.9, vy: 0 };
+	for (let i = 0; i < 100 && !s.scored; i++) step(s, 0.016, parkedH, parkedG);
+	assert(s.scored === 'host', 'a ball past the guest should score for the host');
+	assert(s.ball.x === 0.5, 'a serve should restart mid-field on the goal axis');
+	assert(s.ball.y < 0.25, 'a serve should restart up against the wall, not mid-field');
+	assert(s.ball.vx > 0, 'the serve should travel back towards the guest, who conceded');
+	assert(s.ball.vy > 0, 'the serve should travel away from the wall it starts on');
+
+	s = newGame();
+	s.ball = { x: 0.1, y: 0.5, vx: -0.9, vy: 0 };
+	for (let i = 0; i < 100 && !s.scored; i++) step(s, 0.016, parkedH, parkedG);
+	assert(s.scored === 'guest', 'a ball past the host should score for the guest');
+	assert(s.ball.vx < 0, 'the serve should travel back towards the host, who conceded');
+	assert(s.ball.y < 0.25, 'the mirrored serve should also restart up against the wall');
 
 	// --- 2D: dodging sideways lets the ball through ---
 	s = newGame();
