@@ -11,6 +11,7 @@ load_dotenv()
 
 import os
 import json
+import time
 import uuid
 import asyncio
 import logging
@@ -67,6 +68,29 @@ ALLOWED_RELAY = {"SDP_OFFER", "SDP_ANSWER", "SDP_ICE_CANDIDATE"}
 # safety net into the single largest Redis cost in the system.
 MATCH_POLL_SECONDS = 15
 
+# Per-socket message budget (token bucket). check_rate_limit only runs once, at
+# connect; after that a socket could send unlimited frames, and each PAIRING_START
+# costs ~6 Redis commands — the cheapest way to spend someone else's Upstash quota.
+# Deliberately local/in-process: a per-socket budget needs no cross-instance view,
+# so this behaves identically in Redis and in-memory mode and costs nothing to run.
+#
+# A full ICE exchange is roughly 5-20 candidates plus SDP within a second or two,
+# so a 40 burst covers a real client with headroom and 20/s sustained is an order
+# of magnitude above anything the frontend produces.
+MSG_RATE = float(os.environ.get("MSG_RATE", "20"))    # sustained messages/sec
+
+# PAIRING_START is priced at what it actually costs us downstream (~6 Redis
+# commands), which caps it at ~4/s sustained. A furious Next-clicker manages ~3/s.
+PAIRING_COST = 5
+
+# Clamped so a hand-set MSG_BURST below PAIRING_COST cannot make pairing
+# permanently unaffordable — a silent, total failure that looks like a dead matcher.
+MSG_BURST = max(float(os.environ.get("MSG_BURST", "40")), PAIRING_COST)  # capacity
+
+# Consecutive drops before we stop paying to read from the socket at all. Reset by
+# any allowed message, so this only ever fires on sustained abuse.
+VIOLATION_LIMIT = 50
+
 # --- Helper Classes ---
 
 class ManagedWebSocket:
@@ -75,6 +99,23 @@ class ManagedWebSocket:
         self.id = ws_id
         self.closed = False
         self.on_send_fail = on_send_fail  # callable(ws_id) -> None
+        # Token bucket. Lives here because this object is already per-ws_id and
+        # already reaped by cleanup(), so the limiter needs no registry of its own.
+        self.tokens = MSG_BURST
+        self.last_refill = time.monotonic()
+        self.violations = 0
+
+    def take(self, cost: float = 1.0) -> bool:
+        """Spend `cost` tokens. False if the socket is over its budget."""
+        now = time.monotonic()
+        self.tokens = min(MSG_BURST, self.tokens + (now - self.last_refill) * MSG_RATE)
+        self.last_refill = now
+        if self.tokens < cost:
+            self.violations += 1
+            return False
+        self.tokens -= cost
+        self.violations = 0
+        return True
 
     async def safe_close(self):
         if not self.closed:
@@ -273,6 +314,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.close(code=1009)  # 1009 = Message Too Big
                 break
 
+            # Charge before parsing, so a flooder never buys JSON parsing off us.
+            if not ws.take():
+                if ws.violations >= VIOLATION_LIMIT:
+                    logger.warning(f"[{ws_id}] Sustained message flood; closing.")
+                    await websocket.close(code=1008)  # 1008 = Policy Violation
+                    break
+                continue
+
             try:
                 data = json.loads(message)
             except json.JSONDecodeError:
@@ -287,6 +336,9 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_name = data.get("name")
 
             if msg_name == "PAIRING_START":
+                # Top up to the real cost of this message (1 was already charged).
+                if not ws.take(PAIRING_COST - 1):
+                    continue
                 # Ensure clean slate (soft_unpair so we don't close current socket).
                 await store.remove_waiting(ws_id)
                 await soft_unpair(ws_id)

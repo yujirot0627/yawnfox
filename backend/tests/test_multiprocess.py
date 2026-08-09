@@ -12,7 +12,11 @@ Verifies:
   1. Cross-instance matching (clients on different instances get paired)
   2. Cross-instance signaling relay (SDP/ICE/PARTNER_LEFT across instances)
   3. Same-instance matching (fast local path)
-  4. Sliding-window rate limiting
+  4. Sliding-window rate limiting (per IP, at connect)
+  5. Per-socket message rate limiting (token bucket, after connect)
+
+See also tests/test_matcher.py for the matcher selection logic and its Redis
+cost, which this file cannot isolate (it races the live matcher loop).
 
 Env overrides: INST_A_URL, INST_B_URL, REDIS_URL.
 """
@@ -133,10 +137,43 @@ async def test_rate_limit():
     check("connections beyond the limit rejected", limited == 2, f"limited={limited}")
 
 
+async def test_message_rate_limit():
+    print("\nTest 4: per-socket message limiting (defaults MSG_BURST=40, MSG_RATE=20/s)")
+    await flush_rate_keys()  # test 3 just consumed this IP's connection budget
+    # An unroutable name: the server ignores it without touching Redis, so this
+    # measures the limiter and nothing else.
+    noop = json.dumps({"name": "NOOP"})
+
+    async with connect(URL_A) as ws:
+        for _ in range(30):          # inside the burst allowance
+            await ws.send(noop)
+        alive = True
+        try:
+            await recv(ws, timeout=1.0)
+        except asyncio.TimeoutError:
+            pass                     # no frame, socket still open -> expected
+        except ConnectionClosed:
+            alive = False
+        check("a burst within the allowance is not disconnected", alive)
+
+        if alive:
+            closed = False
+            try:
+                for _ in range(400):  # sustained flood, well past VIOLATION_LIMIT
+                    await ws.send(noop)
+                await recv(ws, timeout=3.0)
+            except ConnectionClosed:
+                closed = True
+            except asyncio.TimeoutError:
+                pass
+            check("a sustained flood gets the socket closed", closed)
+
+
 async def main():
     await test_cross_instance_match_and_relay()
     await test_same_instance_match()
     await test_rate_limit()
+    await test_message_rate_limit()
     print(f"\n==== {len(passed)} passed, {len(failed)} failed ====")
     if failed:
         print("FAILED:", ", ".join(failed))
