@@ -52,6 +52,16 @@ MATCHER_LOCK_MS = 15000
 # so nobody starves behind a window they cannot see past.
 MATCH_WINDOW = 64
 
+# How long the pub/sub link may stay silent before we make it prove it is alive.
+# Only a *hung* server needs this: one that drops the socket raises out of
+# get_message immediately and for free. That case is rare, so the probe is
+# deliberately infrequent — at 30s it cost 8,640 commands/day on an idle
+# instance, most of the Upstash free tier, to watch for something that usually
+# announces itself. Lower it if you would rather find a hung Redis sooner than
+# save the commands. Costs nothing on a busy instance: traffic is its own proof.
+HEALTH_PING_SECONDS = int(os.environ.get("HEALTH_PING_SECONDS", "120"))
+HEALTH_PING_TIMEOUT = 5
+
 CONN_TTL = int(os.environ.get("CONN_TTL", "90"))            # presence key ttl (s)
 PARTNER_TTL = int(os.environ.get("PARTNER_TTL", "300"))     # partner mapping ttl (s)
 TOPICS_TTL = int(os.environ.get("TOPICS_TTL", "1800"))      # waiting topics ttl (s)
@@ -81,6 +91,13 @@ def rate_key(ip: str) -> str:
 
 
 # --- Module state ---
+# Two variables, deliberately: _client is the redis-py client object, built once
+# and kept for the life of the process; _redis is that same object only while the
+# connection is known to work, and None otherwise. Everything else in this module
+# guards on `if not _redis`, so health is enforced in one place and an outage
+# short-circuits every operation instead of blocking on a dead socket. See
+# _set_redis_up() for who flips it.
+_client: Optional[redis.Redis] = None
 _redis: Optional[redis.Redis] = None
 _pubsub = None
 _instance_id: str = os.environ.get("FLY_MACHINE_ID") or uuid.uuid4().hex
@@ -257,13 +274,13 @@ async def connect() -> bool:
     When REDIS_URL is not set, skips Redis entirely and runs in
     in-memory mode; always returns True without logging any error.
     """
-    global _redis
+    global _client
     if _inmemory_mode:
         logger.info(f"REDIS_URL not set — in-memory mode (instance {_instance_id})")
         return True
     url = _build_url()
     try:
-        _redis = redis.from_url(
+        _client = redis.from_url(
             url,
             decode_responses=True,
             socket_connect_timeout=5,
@@ -271,19 +288,50 @@ async def connect() -> bool:
             health_check_interval=30,
             retry_on_timeout=True,
         )
-        await _redis.ping()
-        logger.info(f"Connected to Redis ({url.rsplit('@', 1)[-1]}) as instance {_instance_id}")
-        return True
     except Exception as e:
-        logger.error(f"Redis connection failed: {e}")
-        _redis = None
+        # A URL we cannot even parse will not fix itself, so leave _client unset
+        # and let the pub/sub listener idle rather than retry forever.
+        logger.error(f"Redis client could not be created: {e}")
         return False
+    try:
+        await _client.ping()
+    except Exception as e:
+        # Keep the client. from_url() does not connect, so this failure says
+        # nothing about the URL — and holding on to it is what lets the pub/sub
+        # listener retry and bring us up on its own once Redis is reachable.
+        # Previously this dropped the client, and nothing ever rebuilt it: an
+        # instance that booted during a blip stayed dead until someone restarted it.
+        logger.error(f"Redis connection failed: {e} — starting in redis-down mode")
+        return False
+    _set_redis_up(True)
+    logger.info(f"Connected to Redis ({url.rsplit('@', 1)[-1]}) as instance {_instance_id}")
+    return True
+
+
+def _set_redis_up(up: bool) -> None:
+    """Mark the Redis connection usable or not. Logs only on a transition.
+
+    The pub/sub listener is the only caller: it holds a long-lived connection
+    that redis-py already PINGs every health_check_interval, so it learns about a
+    failure without anyone spending a command to ask.
+    """
+    global _redis
+    was_up = _redis is not None
+    _redis = _client if up else None
+    if up and not was_up:
+        logger.info("Redis connection restored — accepting clients again")
+    elif was_up and not up:
+        logger.error("Redis connection lost — refusing new clients until it returns")
 
 
 def is_ready() -> bool:
     """Can this instance accept traffic?
 
-    True in in-memory mode, and in Redis mode only while the connection is up.
+    True in in-memory mode, and in Redis mode only while the connection is up —
+    tracked continuously, not just at startup, so an outage that begins later
+    turns this False and new clients are told SERVER_UNAVAILABLE instead of
+    waiting in a pool that is not there.
+
     This is deliberately NOT a statement about Redis — it answers "should we let a
     client in", which is why it is true with no Redis at all. Use mode() to find
     out how state is actually being stored.
@@ -297,8 +345,9 @@ def mode() -> str:
     "in-memory"  REDIS_URL is unset. No Redis is contacted; state lives in this
                  process. Single instance only, and the rate limiter is disabled.
     "redis"      Connected. Multi-instance safe.
-    "redis-down" REDIS_URL is set but the connection failed at startup, so the
-                 instance is refusing clients.
+    "redis-down" REDIS_URL is set but the connection is not usable right now —
+                 it failed at startup or dropped since — so the instance is
+                 refusing clients. Recovers on its own; no restart needed.
 
     is_ready() collapses the first two into one boolean, which is what made a
     misnamed REDIS_URL look healthy. This does not.
@@ -309,10 +358,10 @@ def mode() -> str:
 
 
 async def close() -> None:
-    global _redis, _pubsub
+    global _client, _redis, _pubsub
     if _inmemory_mode:
         return
-    for obj in (_pubsub, _redis):
+    for obj in (_pubsub, _client):
         if obj is None:
             continue
         try:
@@ -324,6 +373,7 @@ async def close() -> None:
                 pass
         except Exception:
             pass
+    _client = None
     _redis = None
     _pubsub = None
 
@@ -675,6 +725,15 @@ async def pubsub_listener() -> None:
     to (un)subscribe individually; each instance simply ignores channels for
     clients it does not own. Reconnects with backoff on failure.
 
+    Doubles as this instance's Redis health signal, which is why nothing else
+    polls for it. The connection here is long lived, and redis-py PINGs it every
+    health_check_interval from inside get_message (parse_response -> check_health),
+    so a socket that dropped raises straight away and one that went silently
+    half-open raises within ~30s. Either way it lands in the except branch below,
+    which is already responsible for reconnecting with backoff. Marking health
+    from here therefore costs nothing: the PING is sent whether or not we react
+    to it, and the hot path (relay, matching) gains no work at all.
+
     In in-memory mode (REDIS_URL not set), pub/sub is not needed
     since there is only one instance; this task sleeps indefinitely.
     """
@@ -684,19 +743,42 @@ async def pubsub_listener() -> None:
     global _pubsub
     backoff = 0.5
     while True:
-        if not _redis:
+        if not _client:
+            # No client at all: the URL could not be parsed, so retrying is futile.
             await asyncio.sleep(1.0)
             continue
         try:
-            _pubsub = _redis.pubsub(ignore_subscribe_messages=True)
+            _pubsub = _client.pubsub(ignore_subscribe_messages=True)
             await _pubsub.psubscribe(CHAN_PATTERN)
             await _pubsub.subscribe(WAKEUP_CHANNEL)
+            # Both subscribes are real commands, so reaching here proves the
+            # connection works — including on the first pass after a failed
+            # startup, which is how a cold start during an outage recovers.
+            _set_redis_up(True)
             logger.info("Pub/Sub listener subscribed.")
             backoff = 0.5
+            last_proof = time.monotonic()
             while True:
                 msg = await _pubsub.get_message(timeout=5.0)
                 if msg is None:
+                    # A None here does NOT mean the link is healthy. redis-py does
+                    # send a health-check PING from inside parse_response, but it
+                    # reads the reply with this same non-blocking timeout, so a
+                    # missing pong is indistinguishable from "no messages" and
+                    # never raises. Measured: SIGSTOPing redis left the connection
+                    # reported healthy indefinitely (still "redis" after 47s).
+                    # So when the link has gone quiet, ask a question that has to
+                    # be answered. A failure raises into the except below.
+                    if time.monotonic() - last_proof >= HEALTH_PING_SECONDS:
+                        # wait_for, not the client's socket_timeout: measured, a
+                        # PING against a SIGSTOPed server was still blocked after
+                        # 25s despite socket_timeout=5 and retry_on_timeout. An
+                        # unbounded await here would wedge this whole task, which
+                        # also carries cross-instance delivery.
+                        await asyncio.wait_for(_client.ping(), HEALTH_PING_TIMEOUT)
+                        last_proof = time.monotonic()
                     continue
+                last_proof = time.monotonic()   # real traffic is its own proof
                 if msg.get("type") not in ("message", "pmessage"):
                     continue
                 channel = msg.get("channel")
@@ -715,6 +797,9 @@ async def pubsub_listener() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            # The connection is gone: stop admitting clients and stop issuing
+            # commands until a resubscribe proves it is back.
+            _set_redis_up(False)
             logger.warning(f"pubsub listener error, reconnecting: {e}")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10)
