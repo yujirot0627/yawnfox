@@ -10,7 +10,8 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"format": "prettier --write .",
 		"lint": "prettier --check . && eslint .",
-		"test:leak": "playwright test"
+		"test:leak": "playwright test tests/leak.spec.js",
+		"test:media": "playwright test tests/media-permission.spec.js"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^1.2.5",

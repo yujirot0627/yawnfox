@@ -201,4 +201,10 @@ test('connection count stays flat across repeated Next cycles', async ({ browser
 	// The assertions. A page only ever needs one of each.
 	expect(last.pcLive, 'live RTCPeerConnections on page A').toBe(1);
 	expect(last.wsLive, 'live WebSockets on page A').toBe(1);
+
+	// One socket per cycle plus the initial one. Signaling reconnection creates
+	// sockets, so this guards the healthy path against a reconnect loop that
+	// retries when it shouldn't — the counts above would still read 1 while the
+	// app churned through sockets underneath.
+	expect(last.wsTotal, 'signaling sockets constructed').toBeLessThanOrEqual(CYCLES + 2);
 });

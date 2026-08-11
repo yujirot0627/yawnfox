@@ -3,6 +3,21 @@
 // options.connectTimeoutMs (used by the self-check).
 const CONNECT_TIMEOUT_MS = 15000;
 
+// Close codes where the server is saying "go away", not "try again". Retrying
+// these is worse than useless — 1013 in particular means we already tripped the
+// per-IP limiter, so another attempt just deepens the hole.
+//   1008 origin / policy violation   1009 frame too big
+//   1011 SERVER_UNAVAILABLE          1013 RATE_LIMITED
+const TERMINAL_CLOSE_CODES = [1008, 1009, 1011, 1013];
+
+// Signaling reconnection. Deliberately few attempts: the backend allows
+// RATE_LIMIT_MAX=5 connections per IP per 60s (backend/store.py), and the first
+// connect plus every "Next" already spend from that same budget. Initial + 4
+// retries is the whole allowance; a 5th would be answered with 1013 every time.
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_CAP_MS = 10000;
+const RECONNECT_MAX = 4;
+
 export class PeerConnection {
 	sdpExchange;
 	peerConnection;
@@ -21,6 +36,11 @@ export class PeerConnection {
 		this._wsBuffer = [];
 		this._connectTimer = null;
 		this._disconnected = false;
+		this._reconnectTimer = null;
+		this._retries = 0;
+		// Text from a RATE_LIMITED / SERVER_UNAVAILABLE frame, held until the close
+		// that follows it can surface it. See the message handler.
+		this._signalingError = null;
 	}
 
 	async init() {
@@ -40,22 +60,54 @@ export class PeerConnection {
 			this.setState('NOT_CONNECTED');
 		}
 		this.peerConnection = this.createPeerConnection();
-		this.sdpExchange = await this.createSdpExchange();
+		this.createSdpExchange();
 	}
 
-	async createSdpExchange() {
+	/**
+	 * The one and only place a signaling socket is constructed. Reconnecting is
+	 * simply calling this again — every handler below attaches fresh to the new
+	 * socket, so nothing has to be re-wired by hand.
+	 *
+	 * Synchronous on purpose. It has nothing to await, and as an async function
+	 * there would be a microtask gap between closing the old socket and pointing
+	 * this.sdpExchange at the new one — which is exactly where disconnect() can
+	 * interleave and leave a socket owned by nobody.
+	 */
+	createSdpExchange() {
+		// A torn-down peer never gets a new socket. Guarding here rather than at
+		// the call sites means a future caller cannot forget it.
+		if (this._disconnected) return;
+		// Whatever we had goes before the replacement exists, so "one live
+		// signaling socket per peer" holds by construction rather than by rule.
+		this.sdpExchange?.close();
+
 		const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
 		const ws = new WebSocket(`${protocol}://${import.meta.env.VITE_API_DOMAIN}/api/matchmaking`);
+		this.sdpExchange = ws;
 
 		ws.addEventListener('open', () => {
 			console.log('✅ signaling connected');
-			// flush buffered messages
+			this._retries = 0;
+			// flush buffered messages — anything queued during an outage, including
+			// ICE gathered while the socket was down, goes out here.
 			this._wsBuffer.forEach((m) => ws.send(m));
 			this._wsBuffer = [];
+			this.options?.onSignalingState?.('open');
 		});
 
 		ws.onerror = (e) => console.log('❌ signaling error', e);
-		ws.onclose = (e) => console.log('🔌 signaling closed', e);
+
+		ws.onclose = (e) => {
+			console.log('🔌 signaling closed', e.code);
+			// Two guards, and they cover each other's ordering hole. _disconnected
+			// catches a deliberate teardown (disconnect() sets it long before it
+			// closes the socket); the identity check catches a socket that a
+			// reconnect has already superseded, whose close would otherwise
+			// schedule yet another reconnect. Getting this wrong leaks a socket.
+			if (this._disconnected || this.sdpExchange !== ws) return;
+			if (TERMINAL_CLOSE_CODES.includes(e.code)) return this._signalingFailed();
+			this._scheduleReconnect();
+		};
 
 		ws.addEventListener('message', (event) => {
 			const message = JSON.parse(event.data);
@@ -79,12 +131,45 @@ export class PeerConnection {
 			}
 			if (message.name === 'RATE_LIMITED' || message.name === 'SERVER_UNAVAILABLE') {
 				console.warn(message.name, message.message);
-				alert(message.message || 'Server is busy. Please try again shortly.');
-				this.setState('NOT_CONNECTED');
+				// The server sends this immediately before closing us with 1013/1011,
+				// so only record it here and let onclose surface it — one source of
+				// truth, and no chance of showing it twice.
+				this._signalingError = message.message;
+				// Not while a call is up: this can now arrive on a *reconnect* attempt
+				// made mid-call, and NOT_CONNECTED would blank the chat and reset a
+				// running game for a conversation that is still perfectly alive.
+				if (this.state !== 'CONNECTED') this.setState('NOT_CONNECTED');
 			}
 		});
+	}
 
-		return ws;
+	_scheduleReconnect() {
+		if (this._disconnected) return;
+		if (this._retries >= RECONNECT_MAX) return this._signalingFailed();
+
+		// Full jitter, not a nicety: a deploy or a Redis blip drops every client at
+		// the same instant, and in lockstep they all come back as one spike the
+		// moment the server is up again.
+		const delay =
+			Math.random() * Math.min(RECONNECT_CAP_MS, RECONNECT_BASE_MS * 2 ** this._retries);
+		this._retries++;
+		this.options?.onSignalingState?.('reconnecting');
+		clearTimeout(this._reconnectTimer);
+		// ponytail: _retries resets on open, so a server that accepts then drops in a
+		// loop is bounded only by the backend's own 5/60s limiter (whose 1013 is
+		// terminal and stops us). Add a "healthy for 5s" gate if that ever loosens.
+		this._reconnectTimer = setTimeout(() => this.createSdpExchange(), delay);
+	}
+
+	_signalingFailed() {
+		this.options?.onSignalingState?.('failed', this._signalingError);
+		this._signalingError = null;
+	}
+
+	/** Manual retry, from the "Try again" button. */
+	reconnectSignaling() {
+		this._retries = 0;
+		this.createSdpExchange();
 	}
 
 	_sendSignal(obj) {
@@ -258,6 +343,13 @@ export class PeerConnection {
 		// abandoning the surplus with their sockets still open.
 		if (this._disconnected) return;
 		this._disconnected = true;
+
+		// Cancel any pending reconnect. Without this the timer fires after teardown
+		// and opens a socket on a peer nothing references any more — precisely the
+		// orphan class the leak fix removed. createSdpExchange guards on
+		// _disconnected too; both are one line and this is where being wrong costs
+		// a live socket per outage.
+		clearTimeout(this._reconnectTimer);
 
 		// Inform server if we are the one leaving
 		if (originator === 'LOCAL' && this.sdpExchange?.readyState === WebSocket.OPEN) {
@@ -465,19 +557,40 @@ export class PeerConnection {
 // Next costs no getUserMedia round trip and the camera light never blinks. The
 // caller owns the returned stream and is responsible for releasing it.
 
-/** Open the camera and mic. Returns the stream, or null if it was refused. */
+/**
+ * Open the camera and mic. Throws on failure — deliberately: the caller needs
+ * err.name to tell "you denied it" from "there is no camera" from "another app
+ * has it", which are three different things to tell the user and only one of
+ * them is worth offering a retry for. This used to swallow the error and return
+ * null, which is why the page could only ever say "permission denied".
+ */
 export async function acquireLocalMedia() {
+	// Undefined on an insecure origin, where the getUserMedia call below would
+	// throw TypeError instead of something nameable.
+	if (!navigator.mediaDevices?.getUserMedia) {
+		throw Object.assign(new Error('mediaDevices unavailable'), { name: 'SecurityError' });
+	}
+	return await navigator.mediaDevices.getUserMedia({
+		video: {
+			width: { ideal: 640 },
+			height: { ideal: 480 },
+			frameRate: { ideal: 24, max: 30 }
+		},
+		audio: true
+	});
+}
+
+/**
+ * Is camera permission hard-blocked, i.e. will the browser refuse to re-prompt?
+ * Only the Permissions API can answer this, and Safari/Firefox don't implement
+ * the `camera` descriptor — hence null for "cannot tell", which the caller
+ * distinguishes from a definite true/false.
+ */
+export async function isCameraBlocked() {
 	try {
-		return await navigator.mediaDevices.getUserMedia({
-			video: {
-				width: { ideal: 640 },
-				height: { ideal: 480 },
-				frameRate: { ideal: 24, max: 30 }
-			},
-			audio: true
-		});
-	} catch (err) {
-		console.log('enable camera failed', err);
+		const status = await navigator.permissions.query({ name: 'camera' });
+		return status.state === 'denied';
+	} catch {
 		return null;
 	}
 }

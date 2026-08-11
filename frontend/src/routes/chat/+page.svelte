@@ -1,6 +1,11 @@
 <script>
 	import { onMount, onDestroy } from 'svelte';
-	import { setupPeerConnection, acquireLocalMedia, releaseLocalMedia } from '$lib/peer.js';
+	import {
+		setupPeerConnection,
+		acquireLocalMedia,
+		releaseLocalMedia,
+		isCameraBlocked
+	} from '$lib/peer.js';
 	import Game from '$lib/Game.svelte';
 	import {
 		Video,
@@ -42,6 +47,24 @@
 	let chatInput = '';
 	let messages = []; // { id, text, sender: 'local'|'remote'|'system' }
 
+	// Signaling transport health, kept deliberately separate from currentState: a
+	// dead signaling socket says nothing about a call, which is peer-to-peer once
+	// ICE is up. Folding this into currentState would reset the chat and any
+	// running game on a blip, and leave the button row rendering nothing.
+	let signalingState = 'open'; // 'open' | 'reconnecting' | 'failed'
+	let signalingError = '';
+
+	// Camera failure detail, so the overlay can say what actually went wrong and
+	// offer the right way out.
+	let mediaError = ''; // user-facing message
+	let mediaBlocked = false; // true -> the browser will not re-prompt
+	let mediaDenials = 0; // consecutive NotAllowedError, for browsers with no Permissions API
+	let retrying = false;
+
+	// Set only across handleConnectFailed's teardown, so DISCONNECTED_LOCAL can
+	// tell "the user pressed Next" from "the handshake failed".
+	let connectFailing = false;
+
 	function setState(state) {
 		currentState = state;
 		console.log('state: ', state);
@@ -69,10 +92,13 @@
 			statusMessage = 'Camera permission denied!';
 			showOverlay = true;
 		} else if (state === 'DISCONNECTED_LOCAL') {
-			statusMessage = 'You disconnected';
+			// A failed handshake also tears down with originator LOCAL, because we
+			// still owe the server a LEAVE — but the user did nothing, so don't tell
+			// them they hung up.
+			statusMessage = connectFailing ? "Couldn't connect" : 'You disconnected';
 			showOverlay = true;
 			isRemoteCamOn = true;
-			addMessage('You disconnected.', 'system');
+			if (!connectFailing) addMessage('You disconnected.', 'system');
 		} else if (state === 'DISCONNECTED_REMOTE') {
 			statusMessage = 'Stranger disconnected';
 			showOverlay = true;
@@ -83,7 +109,26 @@
 			createPeer();
 		} else {
 			statusMessage = 'Ready to match!';
+			// Explicit: arriving here from CONNECTED (the rate-limit path) used to
+			// leave showOverlay false, so the user got dead video and no explanation.
+			showOverlay = true;
 		}
+	}
+
+	// Signaling transport changed. Never touches currentState — see the comment on
+	// signalingState.
+	function handleSignalingState(state, message) {
+		signalingState = state;
+		signalingError = message || '';
+
+		// The screen has been saying "Looking for strangers..." throughout the
+		// outage, so re-queue rather than making that retroactively a lie and
+		// charging the user a click for something they already asked for. The
+		// server dropped our queue entry when the socket died and the new socket
+		// has a fresh id, so there is nothing to resume — only to re-send.
+		// Pressing Stop during the outage opts out: it disconnects the peer, which
+		// kills the reconnect loop before it can get here.
+		if (state === 'open' && currentState === 'CONNECTING') startPairing();
 	}
 
 	function addMessage(text, sender) {
@@ -148,7 +193,8 @@
 			onChatMessage: handleChatMessage,
 			onChatReady: (ready) => (isChatReady = ready),
 			onGameMessage: (msg) => gameRef?.handleMessage(msg),
-			onConnectFailed: handleConnectFailed
+			onConnectFailed: handleConnectFailed,
+			onSignalingState: handleSignalingState
 		};
 	}
 
@@ -157,26 +203,68 @@
 	// to searching with the same topics — the stranger was never seen, so there
 	// is nothing to "leave" from the user's point of view.
 	async function handleConnectFailed() {
+		// disconnect() runs setState synchronously, so this flag is read and cleared
+		// within the same tick — see the DISCONNECTED_LOCAL branch.
+		connectFailing = true;
 		peer?.disconnect('LOCAL'); // sends LEAVE so the server unpairs both sides
+		connectFailing = false;
 		await createPeer();
 		startPairing();
 		// After startPairing: CONNECTING clears messages, so add this one last.
 		addMessage("Couldn't connect to that stranger. Looking for someone new…", 'system');
 	}
 
-	onMount(async () => {
-		localStream = await acquireLocalMedia();
-		if (!localStream) {
-			// Refused or unavailable. Nothing to chat with, so no peer and no socket.
+	/** What went wrong with getUserMedia, in words the user can act on. */
+	function mediaErrorMessage(name) {
+		if (name === 'NotFoundError' || name === 'DevicesNotFoundError')
+			return 'No camera or microphone found. Connect one and try again.';
+		if (name === 'NotReadableError' || name === 'TrackStartError')
+			return 'Your camera is already in use by another app. Close it and try again.';
+		if (name === 'SecurityError') return 'Camera access needs a secure (https) connection.';
+		if (name === 'OverconstrainedError') return 'No camera matches the required settings.';
+		return 'Camera and microphone access is needed to start a chat.';
+	}
+
+	// Acquire the camera and build the first peer. Called on mount and again by
+	// the Retry button, so a denied permission no longer means reloading the page.
+	async function startSession() {
+		retrying = true;
+		try {
+			// Release anything from a previous attempt first, or the old camera light
+			// stays on and the tracks leak.
+			releaseLocalMedia(localStream);
+			localStream = await acquireLocalMedia();
+			mediaError = '';
+			mediaBlocked = false;
+			mediaDenials = 0;
+		} catch (err) {
+			console.warn('camera/mic unavailable', err);
+			localStream = null;
+			if (err?.name === 'NotAllowedError') {
+				mediaDenials++;
+				mediaError = 'Camera and microphone access was blocked.';
+				// The Permissions API is the only reliable way to know the browser
+				// will refuse to re-prompt; Safari and Firefox don't implement the
+				// camera descriptor, so fall back to "they said no twice".
+				const blocked = await isCameraBlocked();
+				mediaBlocked = blocked === null ? mediaDenials >= 2 : blocked;
+			} else {
+				mediaError = mediaErrorMessage(err?.name);
+				mediaBlocked = false;
+			}
 			setState('CAMERA_FAILED');
+			retrying = false;
 			return;
 		}
-		localVideo.srcObject = localStream; // set once; it never changes again
 
+		// Re-assigned on every attempt, not once — a retry produces a new stream.
+		localVideo.srcObject = localStream;
 		peer = await setupPeerConnection(peerOptions());
-
 		isRemoteCamOn = true;
-	});
+		retrying = false;
+	}
+
+	onMount(startSession);
 
 	// Cleanup lives here rather than in a function returned from onMount: that
 	// callback is async, so it returns a Promise, and Svelte only invokes a returned
@@ -208,7 +296,13 @@
 	function waitForWebSocketOpen(ws) {
 		return new Promise((resolve) => {
 			if (ws.readyState === WebSocket.OPEN) return resolve();
-			ws.addEventListener('open', () => resolve(), { once: true });
+			ws.addEventListener('open', resolve, { once: true });
+			// Settle on close too. A socket that never opened used to leave this
+			// pending for the life of the page, so createPeer() never returned and
+			// Next, Stop and the "couldn't connect" message all died with it. Resolve
+			// rather than reject: every caller's correct response is the same — stop
+			// waiting — and the reconnect loop owns recovery from here.
+			ws.addEventListener('close', resolve, { once: true });
 		});
 	}
 
@@ -233,7 +327,11 @@
 	}
 
 	async function cancelPairing() {
-		peer.sdpExchange.send(JSON.stringify({ name: 'PAIRING_ABORT' }));
+		// Buffered rather than sent raw: send() on a socket that is mid-reconnect
+		// throws InvalidStateError, and that throw would skip the disconnect and
+		// rebuild below, stranding a live peer. disconnect() drops the buffer a line
+		// later, which is right — an abort means nothing on a socket that never queued.
+		peer._sendSignal({ name: 'PAIRING_ABORT' });
 		peer.disconnect('LOCAL');
 		await createPeer();
 		peer.setState('NOT_CONNECTED');
@@ -308,7 +406,36 @@
 					<div
 						class="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm"
 					>
-						{#if currentState === 'NOT_CONNECTED'}
+						{#if signalingState !== 'open'}
+							<!-- Connection trouble outranks whatever we were doing: the
+							     signaling socket is what Start and matching need. The logo
+							     spins (rather than pulsing as it does when idle) so a problem
+							     never looks like normal waiting. 2s keeps it a brand mark
+							     instead of a hectic spinner. -->
+							<img
+								src="/icon.png"
+								alt=""
+								width="64"
+								height="64"
+								class="mb-4 h-16 w-16 animate-spin opacity-80 [animation-duration:2s]"
+							/>
+							<p class="text-xl font-medium tracking-wide">
+								{signalingState === 'reconnecting'
+									? 'Reconnecting…'
+									: 'Connection unstable, trying again…'}
+							</p>
+							{#if signalingState === 'failed'}
+								<p class="mt-2 max-w-xs text-center text-sm text-gray-300">
+									{signalingError || "Couldn't reach the server."}
+								</p>
+								<button
+									class="mt-4 h-10 rounded-full bg-yellow-400 px-6 font-bold text-black shadow-lg shadow-yellow-400/20 transition-all hover:scale-105 hover:bg-yellow-300"
+									on:click={() => peer?.reconnectSignaling()}
+								>
+									Try again
+								</button>
+							{/if}
+						{:else if currentState === 'NOT_CONNECTED'}
 							<img
 								src="/icon.png"
 								alt="Waiting"
@@ -335,9 +462,49 @@
 							{/if}
 						{:else if currentState === 'CAMERA_FAILED'}
 							<TriangleAlert class="mb-3 h-12 w-12 text-yellow-400" />
-							<p class="text-lg font-semibold">{statusMessage}</p>
+							<p class="text-lg font-semibold">{mediaError || statusMessage}</p>
+							{#if mediaBlocked}
+								<!-- The browser will not re-prompt, so Retry alone cannot fix
+								     this — say what actually has to happen first. -->
+								<p class="mt-2 max-w-xs text-center text-sm text-gray-300">
+									Your browser is blocking access. Open the camera icon in the address bar (or Site
+									settings), allow camera and microphone, then press Retry.
+								</p>
+							{/if}
+							<button
+								class="mt-4 h-10 rounded-full bg-yellow-400 px-6 font-bold text-black shadow-lg shadow-yellow-400/20 transition-all hover:scale-105 hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-50"
+								on:click={startSession}
+								disabled={retrying}
+							>
+								{retrying ? 'Checking…' : 'Retry'}
+							</button>
 						{:else}
 							<p class="text-lg font-semibold">{statusMessage}</p>
+						{/if}
+					</div>
+				{/if}
+
+				<!-- Signaling trouble during a live call. Deliberately a small pill and
+				     not the overlay: media, chat and games are peer-to-peer and still
+				     working, so covering them would be worse than the problem. What the
+				     user actually needs to know is that Next may not work yet. -->
+				{#if signalingState !== 'open' && currentState === 'CONNECTED'}
+					<div
+						class="absolute top-4 left-4 z-40 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-sm text-white backdrop-blur-sm"
+						role="status"
+					>
+						{#if signalingState === 'reconnecting'}
+							<span class="h-2 w-2 animate-pulse rounded-full bg-yellow-400"></span>
+							Reconnecting…
+						{:else}
+							<span class="h-2 w-2 rounded-full bg-red-500"></span>
+							Offline
+							<button
+								class="font-bold text-yellow-400 hover:text-yellow-300"
+								on:click={() => peer?.reconnectSignaling()}
+							>
+								Try again
+							</button>
 						{/if}
 					</div>
 				{/if}
@@ -488,9 +655,12 @@
 			<!-- wraps because two game buttons + Next + toggles overflow narrow screens -->
 			<div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
 				{#if ['NOT_CONNECTED', 'DISCONNECTED_LOCAL', 'DISCONNECTED_REMOTE'].includes(currentState)}
+					<!-- The control row is z-40, above the overlay, so Start stays
+					     clickable while signaling is down — where it would silently no-op. -->
 					<button
-						class="h-10 rounded-full bg-yellow-400 px-6 text-base font-bold text-black shadow-lg shadow-yellow-400/20 transition-all hover:scale-105 hover:bg-yellow-300"
+						class="h-10 rounded-full bg-yellow-400 px-6 text-base font-bold text-black shadow-lg shadow-yellow-400/20 transition-all hover:scale-105 hover:bg-yellow-300 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
 						on:click={startPairing}
+						disabled={signalingState !== 'open'}
 					>
 						Start
 					</button>
