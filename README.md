@@ -2,8 +2,7 @@
 
 Random video chat that pairs two strangers in the browser using WebRTC. Starlette handles signaling. Media flows peer to peer for low latency and low cost.
 
-**Live demo:** <link if you have one>  
-**Design document (PDF):** /docs/Yawnfox-SDD.pdf
+**Live demo:** <https://yawnfox.com>
 
 ---
 
@@ -12,23 +11,24 @@ Random video chat that pairs two strangers in the browser using WebRTC. Starlett
 - [Features](#features)
 - [Architecture](#architecture)
 - [Tech stack](#tech-stack)
-- [Getting started](#getting-started)
 - [Configuration](#configuration)
 - [Running](#running)
+- [Scaling](#scaling)
+- [Testing](#testing)
 - [Signaling protocol](#signaling-protocol)
-- [Limits and known issues](#limits-and-known-issues)
-- [Roadmap](#roadmap)
-- [License](#license)
 
 ---
 
 ## Features
 
 - One to one random pairing for audio and video
+- Topic matching: up to 3 topics per user, preferred over queue order
+- Two peer-to-peer mini-games: Nose Hockey (face-tracked paddles) and X / O
+- Text chat over the WebRTC data channel — it never touches the server
 - Fast call setup using WebRTC with STUN for NAT discovery
 - Minimal Starlette backend for HTTP and WebSocket signaling
 - Simple browser UI written in JavaScript
-- No database by default - ephemeral in memory state
+- No database — shared state in Redis, or fully in-memory for local dev
 
 ---
 
@@ -214,11 +214,42 @@ sixth receives `{"name":"RATE_LIMITED", ...}` and is closed with code `1013`.
 
 ### Redis-down behaviour
 
-- **Down at startup:** the server still boots; `/ping` reports `"redis": false`
-  and clients receive `SERVER_UNAVAILABLE` instead of hanging.
-- **Down mid-operation:** Redis errors are caught and logged; the process never
-  crashes, and it auto-reconnects (including pub/sub re-subscription) when Redis
-  returns.
+`/ping` reports `mode` (`"in-memory"` | `"redis"` | `"redis-down"`) and `ready`
+(whether the instance is accepting clients).
+
+- **Down at startup:** the server still boots; `/ping` reports
+  `mode: "redis-down"`, `ready: false`, and clients receive `SERVER_UNAVAILABLE`
+  instead of hanging.
+- **Down mid-operation:** health is tracked continuously, so `mode` flips to
+  `redis-down` within ~2 minutes even if the server hangs with the socket open.
+  Redis errors are caught and logged, the process never crashes, established
+  peer-to-peer calls are unaffected, and it auto-reconnects (including pub/sub
+  re-subscription) when Redis returns — no restart needed.
+
+Covered end to end by `tests/test_redis_outage.py`, which starts its own Redis
+and kills it mid-run.
+
+### Matcher logic and cost
+
+```bash
+cd backend
+redis-server --port 6390 --daemonize yes --save "" --appendonly no
+REDIS_URL=redis://localhost:6390 python tests/test_matcher.py
+```
+
+Covers topic preference, queue fairness, ghost eviction past the match window,
+in-memory/Redis parity, and that forming a pair costs a bounded number of Redis
+round-trips with 5,000 clients waiting. This is the suite CI runs.
+
+### Frontend self-checks
+
+The pure game-logic modules check themselves — no test framework, no runner:
+
+```bash
+cd frontend
+node src/lib/pong.js         # physics: walls, saves, spin, tunnelling, NaN
+node src/lib/tictactoe.js    # rules: wins, draws, turn order, move validation
+```
 
 ---
 
@@ -228,10 +259,13 @@ JSON messages over the `/api/matchmaking` WebSocket:
 
 | Direction | `name` | Notes |
 |-----------|--------|-------|
-| client → server | `PAIRING_START` | optional `topics: string[]` (max 3) |
+| client → server | `PAIRING_START` | optional `topics: string[]` (max 3, 50 chars each) |
 | client → server | `PAIRING_ABORT` / `LEAVE` | leave the queue / current partner |
-| client → server | `CHAT` | `data: string`, relayed to partner |
 | client ↔ server | `SDP_OFFER` / `SDP_ANSWER` / `SDP_ICE_CANDIDATE` | relayed verbatim to partner |
 | server → client | `PARTNER_FOUND` | `data: "GO_FIRST" \| "WAIT"` |
 | server → client | `PARTNER_LEFT` | partner disconnected |
 | server → client | `RATE_LIMITED` / `SERVER_UNAVAILABLE` | connection refused / degraded |
+
+Only the three `SDP_*` names are relayed to a partner (`ALLOWED_RELAY` in
+`main.py`); anything else is dropped. Text chat and game moves travel over the
+WebRTC data channel and are never seen by the server.

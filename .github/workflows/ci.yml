@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend — lint + self-checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # prettier --check . && eslint .
+      - name: Lint
+        run: npm run lint
+
+      # Pure logic modules with built-in assert-based self-checks.
+      # They exit non-zero on failure, so no runner is needed.
+      - name: Pong physics self-check
+        run: node src/lib/pong.js
+
+      - name: Tic-tac-toe rules self-check
+        run: node src/lib/tictactoe.js
+
+  backend:
+    name: Backend — matcher suite
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6390:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # matches backend/Dockerfile
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # Ruff's default rules only (unused imports, undefined names, syntax).
+      # Config and the one intentional exemption live in backend/ruff.toml.
+      - name: Lint
+        run: pipx run ruff check .
+
+      # Drives store.run_matcher_rounds() against the Redis service above.
+      # 6390 is the port the suite defaults to; the service maps it to 6379.
+      - name: Matcher suite
+        run: python tests/test_matcher.py
+        env:
+          REDIS_URL: redis://localhost:6390
+
+# Not run here, and why:
+#   tests/test_multiprocess.py  — needs two uvicorn instances started by hand
+#   tests/test_redis_outage.py  — hardcodes backend/venv/bin/uvicorn, and
+#                                 SIGSTOPs a real redis-server
+# Both are documented in the root README and run locally before a release.

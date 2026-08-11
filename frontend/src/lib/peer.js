@@ -43,11 +43,8 @@ export class PeerConnection {
 	}
 
 	async createSdpExchange() {
-		await ensureServerAwake();
-
 		const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
 		const ws = new WebSocket(`${protocol}://${import.meta.env.VITE_API_DOMAIN}/api/matchmaking`);
-		//const ws = new WebSocket(`ws://localhost:8000/api/matchmaking`);
 
 		ws.addEventListener('open', () => {
 			console.log('✅ signaling connected');
@@ -249,14 +246,18 @@ export class PeerConnection {
 		if (originator === 'LOCAL' && this.sdpExchange?.readyState === WebSocket.OPEN) {
 			try {
 				this.sdpExchange.send(JSON.stringify({ name: 'LEAVE' }));
-			} catch (_) {}
+			} catch (err) {
+				console.warn('LEAVE send failed', err);
+			}
 		}
 
 		// Close data channel
 		if (this.dataChannel) {
 			try {
 				this.dataChannel.close();
-			} catch (_) {}
+			} catch (err) {
+				console.warn('data channel close failed', err);
+			}
 			this.dataChannel = null;
 		}
 
@@ -264,7 +265,9 @@ export class PeerConnection {
 		if (this.peerConnection && this.peerConnection.signalingState !== 'closed') {
 			try {
 				this.peerConnection.close();
-			} catch (_) {}
+			} catch (err) {
+				console.warn('peer connection close failed', err);
+			}
 		}
 		this.peerConnection = null;
 
@@ -281,7 +284,9 @@ export class PeerConnection {
 		if (this.sdpExchange?.readyState === WebSocket.OPEN) {
 			try {
 				this.sdpExchange.close();
-			} catch (_) {}
+			} catch (err) {
+				console.warn('signaling socket close failed', err);
+			}
 		}
 		this.sdpExchange = null;
 
@@ -462,23 +467,4 @@ export async function setupPeerConnection(options, setInitialState = true) {
 	const pc = new PeerConnection(options, setInitialState);
 	await pc.init();
 	return pc;
-}
-
-// keep your existing wakeup ping
-async function ensureServerAwake() {
-	const lastPing = sessionStorage.getItem('lastServerWake');
-	if (lastPing && Date.now() - Number(lastPing) < 5 * 60 * 1000) return;
-
-	try {
-		const res = await fetch('https://api.yawnfox.com/ping', { cache: 'no-store' });
-		const data = await res.json();
-
-		if (data?.message?.includes('waking up')) {
-			sessionStorage.setItem('lastServerWake', String(Date.now()));
-			alert('⏳ Waking up the server. Please wait ~30 seconds...');
-			await new Promise((resolve) => setTimeout(resolve, 30000));
-		}
-	} catch (err) {
-		console.warn('Ping failed:', err);
-	}
 }

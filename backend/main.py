@@ -272,8 +272,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 "name": "RATE_LIMITED",
                 "message": "Too many connection attempts. Please wait a minute and try again.",
             }))
-        except Exception:
-            pass
+        except Exception as e:
+            # Best effort: we close either way. Logged so a client that gets shut
+            # out with no explanation is distinguishable from one that was told.
+            logger.warning(f"Could not deliver RATE_LIMITED to {ip}: {e}")
         await websocket.close(code=1013)  # 1013 = Try Again Later
         return
 
@@ -286,8 +288,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 "name": "SERVER_UNAVAILABLE",
                 "message": "Server is temporarily unavailable. Please try again shortly.",
             }))
-        except Exception:
-            pass
+        except Exception as e:
+            # Best effort, same as above: log rather than close in silence.
+            logger.warning(f"Could not deliver SERVER_UNAVAILABLE to {ip}: {e}")
         await websocket.close(code=1011)
         return
 

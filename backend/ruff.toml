@@ -1,0 +1,14 @@
+# Ruff's default rule set: pycodestyle errors (E4/E7/E9) + pyflakes (F).
+# Deliberately narrow — this is here to catch unused imports, undefined names
+# and syntax-level mistakes, not to enforce a house style.
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# main.py must call load_dotenv() before `import store`, because store.py
+# resolves its configuration into module-level constants at import time.
+# That puts every other import below a statement, which is E402 by definition.
+# See the comment at the top of main.py.
+"main.py" = ["E402"]

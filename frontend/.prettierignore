@@ -4,3 +4,7 @@ pnpm-lock.yaml
 yarn.lock
 bun.lock
 bun.lockb
+
+# Vendored face-api model files — reformatting a third-party artifact only
+# creates diff noise and makes it harder to verify against upstream.
+static/models/

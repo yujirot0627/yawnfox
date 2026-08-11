@@ -1,5 +1,4 @@
 <script>
-	import { onMount } from 'svelte';
 	import { Tag, Zap, Video, ArrowRight } from 'lucide-svelte';
 
 	let showConfirmation = false;
@@ -24,13 +23,22 @@
 
 <svelte:head>
 	<title>Yawnfox - Free Random Video Chat | Omegle Alternative</title>
-	<meta name="description" content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat." />
+	<meta
+		name="description"
+		content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat."
+	/>
 	<link rel="canonical" href="https://yawnfox.com/" />
 	<meta property="og:title" content="Yawnfox - Free Random Video Chat | Omegle Alternative" />
-	<meta property="og:description" content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat." />
+	<meta
+		property="og:description"
+		content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat."
+	/>
 	<meta property="og:url" content="https://yawnfox.com" />
 	<meta name="twitter:title" content="Yawnfox - Free Random Video Chat | Omegle Alternative" />
-	<meta name="twitter:description" content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat." />
+	<meta
+		name="twitter:description"
+		content="Chat with strangers instantly on Yawnfox. Free random video chat with topic matching. The best Omegle alternative for anonymous video chat."
+	/>
 	<script type="application/ld+json">
 		{
 			"@context": "https://schema.org",
@@ -51,7 +59,13 @@
 		<div
 			class="flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/10 shadow-sm"
 		>
-			<img src="/icon.png" alt="Yawnfox" width="36" height="36" class="h-9 w-9 rounded-full opacity-95" />
+			<img
+				src="/icon.png"
+				alt="Yawnfox"
+				width="36"
+				height="36"
+				class="h-9 w-9 rounded-full opacity-95"
+			/>
 		</div>
 		<!-- Menu (Optional placeholder) -->
 		<!-- <button class="text-gray-400 hover:text-white">Menu</button> -->
@@ -185,7 +199,6 @@
 	{#if showConfirmation}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md duration-200"
 			on:click={() => (showConfirmation = false)}
@@ -199,7 +212,7 @@
 				<ul class="mb-6 space-y-3 text-sm text-gray-300">
 					<li class="flex items-start gap-3">
 						<span class="text-yellow-400">•</span>
-						<span>Camera and microphone permissions required used.</span>
+						<span>Camera and microphone permissions are required.</span>
 					</li>
 					<li class="flex items-start gap-3">
 						<span class="text-yellow-400">•</span>
@@ -207,11 +220,11 @@
 					</li>
 					<li class="flex items-start gap-3">
 						<span class="text-yellow-400">•</span>
-						<span>You can hide messages or block users.</span>
+						<span>You can hide messages or skip to the next person at any time.</span>
 					</li>
 				</ul>
 
-				<label class="mb-6 flex cursor-pointer select-none items-center gap-2">
+				<label class="mb-6 flex cursor-pointer items-center gap-2 select-none">
 					<input
 						type="checkbox"
 						bind:checked={skipNextTime}

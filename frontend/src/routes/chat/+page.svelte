@@ -1,5 +1,5 @@
 <script>
-	import { onMount, onDestroy, tick } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { setupPeerConnection, acquireLocalMedia, releaseLocalMedia } from '$lib/peer.js';
 	import Game from '$lib/Game.svelte';
 	import {
@@ -165,8 +165,6 @@
 	}
 
 	onMount(async () => {
-		window.setAppState = setState;
-
 		localStream = await acquireLocalMedia();
 		if (!localStream) {
 			// Refused or unavailable. Nothing to chat with, so no peer and no socket.
@@ -326,7 +324,7 @@
 							<p class="text-lg font-medium">{statusMessage}</p>
 							{#if topics.length > 0}
 								<div class="mt-3 flex flex-wrap justify-center gap-2">
-									{#each topics as t}
+									{#each topics as t (t)}
 										<span
 											class="rounded border border-yellow-400/30 bg-yellow-400/20 px-2 py-0.5 text-sm text-yellow-300"
 										>
@@ -388,7 +386,6 @@
 			</div>
 
 			<!-- Local Video -->
-			<!-- svelte-ignore a11y_media_has_caption -->
 			<div
 				class={`z-30 overflow-hidden bg-gray-800 transition-all duration-300
 				${
@@ -437,7 +434,7 @@
 			<div
 				class="no-scrollbar flex h-10 items-center gap-2 overflow-x-auto overflow-y-hidden px-1 whitespace-nowrap"
 			>
-				{#each topics as t, i}
+				{#each topics as t, i (t)}
 					<div
 						class="flex flex-none items-center gap-1 rounded-full border border-yellow-400/30 bg-yellow-400/10 px-3 py-1 text-sm text-yellow-300"
 					>
