@@ -20,6 +20,7 @@ export class PeerConnection {
 		this._pendingCandidates = [];
 		this._wsBuffer = [];
 		this._connectTimer = null;
+		this._disconnected = false;
 	}
 
 	async init() {
@@ -126,12 +127,18 @@ export class PeerConnection {
 			});
 		};
 
-		// connection state
+		// Connection state. Both of these must go through disconnect(), not bare
+		// setState: announcing DISCONNECTED_REMOTE makes the page build a
+		// replacement peer, so anything that announces it without tearing this one
+		// down leaves a fully live PeerConnection — socket open, tracks still
+		// encoding — with nothing referencing it. Measured at one leaked peer per
+		// "Next" before this. disconnect() is idempotent, which matters here
+		// because both handlers fire for the same transition.
 		conn.oniceconnectionstatechange = () => {
 			console.log('ICE state:', conn.iceConnectionState);
 			if (conn.iceConnectionState === 'connected') this.setState('CONNECTED');
 			if (['disconnected', 'failed', 'closed'].includes(conn.iceConnectionState)) {
-				this.setState('DISCONNECTED_REMOTE');
+				this.disconnect('REMOTE');
 			}
 		};
 
@@ -139,7 +146,7 @@ export class PeerConnection {
 			console.log('PC state:', conn.connectionState);
 			if (conn.connectionState === 'connected') this.setState('CONNECTED');
 			if (['disconnected', 'failed', 'closed'].includes(conn.connectionState)) {
-				this.setState('DISCONNECTED_REMOTE');
+				this.disconnect('REMOTE');
 			}
 		};
 
@@ -242,6 +249,16 @@ export class PeerConnection {
 	}
 
 	disconnect(originator) {
+		// Teardown runs exactly once. Several things race to call this for a single
+		// disconnection — the data channel's close event fires after the channel has
+		// already been closed and nulled here, and the ICE and connection state
+		// handlers both report the same transition. Each extra pass reached
+		// setState below, and every DISCONNECTED_REMOTE makes the page construct a
+		// replacement peer, so one "Next" was building two or three of them and
+		// abandoning the surplus with their sockets still open.
+		if (this._disconnected) return;
+		this._disconnected = true;
+
 		// Inform server if we are the one leaving
 		if (originator === 'LOCAL' && this.sdpExchange?.readyState === WebSocket.OPEN) {
 			try {
@@ -280,8 +297,12 @@ export class PeerConnection {
 		// The reference is kept rather than nulled: handlePartnerFound / handleSdpOffer
 		// read this.localStream unguarded.
 
-		// Close WebSocket (your backend triggers PARTNER_LEFT when this closes)
-		if (this.sdpExchange?.readyState === WebSocket.OPEN) {
+		// Close WebSocket (your backend triggers PARTNER_LEFT when this closes).
+		// Unconditionally: the reference is dropped either way, and close() is legal
+		// in every readyState. Guarding on OPEN meant a socket still CONNECTING was
+		// dereferenced without being closed, and the spec forbids collecting a
+		// CONNECTING/OPEN socket that still has listeners — so it stayed forever.
+		if (this.sdpExchange) {
 			try {
 				this.sdpExchange.close();
 			} catch (err) {
@@ -296,6 +317,14 @@ export class PeerConnection {
 		this._wsBuffer = [];
 
 		this.setState(`DISCONNECTED_${originator}`);
+
+		// Last thing, after the page has been told. options holds callbacks that
+		// close over the chat page's scope, so a peer that outlives its teardown
+		// would pin the whole component — both video elements, the message list,
+		// the Game instance. Dropping it also neuters any late event that still
+		// reaches this object: every use site is optional-chained, so they become
+		// no-ops instead of driving UI for a pairing that is over.
+		this.options = null;
 	}
 
 	setState(state) {
